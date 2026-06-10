@@ -1,0 +1,47 @@
+# Stack: Express API + Next.js, using an *existing* Postgres container named `pgdb`.
+#
+# Important: for `DATABASE_URL=...@pgdb:5432/...` to work, your `pgdb` container must be on the same Docker network
+# as these services. Quick setup:
+#   docker network create pwm-net || true
+#   docker network connect pwm-net pgdb
+# Then run:
+#   docker compose up --build
+#
+# Browser uses http://localhost:3000 → API http://localhost:4000.
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pwm-api
+    environment:
+      # Override if your pgdb creds/db differ:
+      # DATABASE_URL="postgresql://<username>:<password>@pgdb:5432/pwm"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://nirnai:hebbar123@pgdb:5432/pwm}
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    networks:
+      - pwm-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Browser (your machine) → API on host port 4000
+        NEXT_PUBLIC_API_URL: http://localhost:4000
+    container_name: pwm-frontend
+    environment:
+      # Next.js server-side fetch inside this container → API service on Docker network
+      API_INTERNAL_URL: http://api:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - pwm-net
+
+networks:
+  pwm-net:
+    external: true
