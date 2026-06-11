@@ -1,9 +1,9 @@
-# Stack: Express API + Next.js, using an *existing* Postgres container named `pgdb`.
+# Stack: Express API + Next.js, using the Postgres container `pgdb` from ~/systems/postgres.
 #
-# Important: for `DATABASE_URL=...@pgdb:5432/...` to work, your `pgdb` container must be on the same Docker network
-# as these services. Quick setup:
+# Both stacks share the external network `pwm-net` (pgdb joins it via systems/postgres/docker-compose.yml).
+# One-time setup:
 #   docker network create pwm-net || true
-#   docker network connect pwm-net pgdb
+#   docker compose -f ~/systems/postgres/docker-compose.yml up -d
 # Then run:
 #   docker compose up --build
 #
@@ -17,7 +17,7 @@ services:
     environment:
       # Override if your pgdb creds/db differ:
       # DATABASE_URL="postgresql://<username>:<password>@pgdb:5432/pwm"
-      DATABASE_URL: ${DATABASE_URL:-postgresql://nirnai:hebbar123@pgdb:5432/pwm}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://shebbar:hebbar123@pgdb:5432/pwm}
       PORT: "4000"
     ports:
       - "4000:4000"
