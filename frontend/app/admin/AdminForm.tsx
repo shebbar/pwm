@@ -11,10 +11,13 @@ import {
   type SwpPlan,
 } from "@/lib/api";
 
+type AssetClass = "equity" | "debt" | "cash";
+
 type BucketRow = {
   name: string;
   corpus: string;
   returnPct: string;
+  assetClass: AssetClass;
 };
 
 function bucketsToRows(buckets: InvestmentBucket[]): BucketRow[] {
@@ -22,6 +25,7 @@ function bucketsToRows(buckets: InvestmentBucket[]): BucketRow[] {
     name: b.name ?? "",
     corpus: String(Number(b.corpus_lakhs)),
     returnPct: String(Number(b.return_pct)),
+    assetClass: b.asset_class ?? "equity",
   }));
 }
 
@@ -72,7 +76,9 @@ export function AdminForm() {
   const applyState = useCallback((s: FullState) => {
     const buckets = bucketsToRows(s.investment_buckets ?? []);
     setBucketRows(
-      buckets.length ? buckets : [{ name: "", corpus: "0", returnPct: "8" }]
+      buckets.length
+        ? buckets
+        : [{ name: "", corpus: "0", returnPct: "8", assetClass: "equity" }]
     );
     setInflation(String(Number(s.settings.inflation_pct)));
     setStartAge(String(s.settings.start_age));
@@ -105,6 +111,7 @@ export function AdminForm() {
       name: row.name.trim(),
       corpus_lakhs: Number(row.corpus) || 0,
       return_pct: Number(row.returnPct) || 0,
+      asset_class: row.assetClass,
     }));
 
   const mapLumpRows = (lumps: LumpRow[], sa: number, ea: number) =>
@@ -143,7 +150,7 @@ export function AdminForm() {
         investment_buckets:
           buckets.length > 0
             ? buckets
-            : [{ name: "", corpus_lakhs: 0, return_pct: 0 }],
+            : [{ name: "", corpus_lakhs: 0, return_pct: 0, asset_class: "equity" as const }],
         inflation_pct: Number(inflation) || 0,
         start_age: sa,
         end_age: ea,
@@ -171,7 +178,10 @@ export function AdminForm() {
   };
 
   const addBucketRow = () => {
-    const next = [...bucketRows, { name: "", corpus: "0", returnPct: "8" }];
+    const next = [
+      ...bucketRows,
+      { name: "", corpus: "0", returnPct: "8", assetClass: "equity" as const },
+    ];
     setBucketRows(next);
     void persistBucketRows(next);
   };
@@ -375,6 +385,9 @@ export function AdminForm() {
                 <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
                   Return (% nominal)
                 </th>
+                <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                  Asset class
+                </th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-600 dark:text-zinc-400">
                   {/* remove */}
                 </th>
@@ -416,6 +429,21 @@ export function AdminForm() {
                         updateBucketRow(i, { returnPct: e.target.value })
                       }
                     />
+                  </td>
+                  <td className="px-3 py-2">
+                    <select
+                      className="w-full min-w-[7rem] rounded border border-zinc-200 bg-transparent px-2 py-1 dark:border-zinc-700"
+                      value={row.assetClass}
+                      onChange={(e) =>
+                        updateBucketRow(i, {
+                          assetClass: e.target.value as AssetClass,
+                        })
+                      }
+                    >
+                      <option value="equity">Equity</option>
+                      <option value="debt">Debt / FD</option>
+                      <option value="cash">Cash / Savings</option>
+                    </select>
                   </td>
                   <td className="px-3 py-2 text-right">
                     <button

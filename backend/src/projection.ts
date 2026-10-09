@@ -8,6 +8,7 @@ export type InvestmentBucketRow = {
   name: string;
   corpus_lakhs: string;
   return_pct: string;
+  asset_class: "equity" | "debt" | "cash";
 };
 
 export type FlowRow = {
@@ -33,6 +34,21 @@ export type YearPoint = {
   netFlowLakhs: number;
   endCorpusLakhs: number;
 };
+
+export function totalCorpusLakhs(buckets: InvestmentBucketRow[]): number {
+  return buckets.reduce((sum, b) => sum + Number(b.corpus_lakhs), 0);
+}
+
+export function weightedReturnPct(buckets: InvestmentBucketRow[]): number {
+  const total = totalCorpusLakhs(buckets);
+  if (total <= 0) return 0;
+  return (
+    buckets.reduce(
+      (sum, b) => sum + Number(b.corpus_lakhs) * Number(b.return_pct),
+      0
+    ) / total
+  );
+}
 
 /** Real growth factor after flows: Fisher-style (1+r)/(1+i) - 1, then compound. */
 function realGrowthFactor(portfolioReturnPct: number, inflationPct: number): number {
@@ -155,4 +171,12 @@ export function buildProjection(
 
 function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
+}
+
+/** First age (year-end) where corpus is zero or negative; null if it never runs out. */
+export function corpusDepletionAge(points: YearPoint[]): number | null {
+  for (const p of points) {
+    if (p.endCorpusLakhs <= 0) return p.age;
+  }
+  return null;
 }

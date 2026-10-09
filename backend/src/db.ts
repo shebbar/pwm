@@ -70,6 +70,8 @@ const MIGRATION_FILES = [
   "004_swp_plans.sql",
   "005_investment_buckets.sql",
   "006_bucket_name.sql",
+  "007_agent_runs.sql",
+  "008_bucket_asset_class.sql",
 ];
 
 export async function runMigrations(): Promise<void> {

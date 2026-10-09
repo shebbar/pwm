@@ -7,14 +7,18 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp -r src/migrations dist/migrations",
     "start": "node dist/index.js",
-    "migrate": "tsx src/migrate.ts"
+    "migrate": "tsx src/migrate.ts",
+    "tools:smoke": "tsx src/tools.smoke.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "express-rate-limit": "^7.4.1",
     "pg": "^8.13.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

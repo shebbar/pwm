@@ -5,6 +5,7 @@ import {
   totalCorpusLakhs,
   weightedReturnPct,
 } from "@/lib/api";
+import ChatPanel from "./ChatPanel";
 
 function formatLakhs(n: number): string {
   return new Intl.NumberFormat("en-IN", {
@@ -131,6 +132,8 @@ export default async function DashboardPage() {
           View growth chart
         </Link>
       </div>
+
+      <ChatPanel />
     </main>
   );
 }

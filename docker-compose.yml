@@ -19,6 +19,10 @@ services:
       # DATABASE_URL="postgresql://<username>:<password>@pgdb:5432/pwm"
       DATABASE_URL: ${DATABASE_URL:-postgresql://shebbar:hebbar123@pgdb:5432/pwm}
       PORT: "4000"
+      # Chat agent's Claude Platform key, backend-only. Set in a repo-root
+      # .env (see .env.example) -- never name it ANTHROPIC_API_KEY.
+      PORTFOLIO_LLM_API_KEY: ${PORTFOLIO_LLM_API_KEY:-}
+      PORTFOLIO_LLM_MODEL: ${PORTFOLIO_LLM_MODEL:-claude-haiku-4-5-20251001}
     ports:
       - "4000:4000"
     networks:

@@ -20,6 +20,7 @@ export type InvestmentBucket = {
   name: string;
   corpus_lakhs: string;
   return_pct: string;
+  asset_class: "equity" | "debt" | "cash";
 };
 
 export type Flow = {
@@ -92,6 +93,7 @@ export type SavePayload = {
     name: string;
     corpus_lakhs: number;
     return_pct: number;
+    asset_class: "equity" | "debt" | "cash";
   }[];
   inflation_pct: number;
   start_age: number;
@@ -105,6 +107,83 @@ export type SavePayload = {
     monthly_amount_lakhs: number;
   }[];
 };
+
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type ChatUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+};
+
+export type ToolEvent = {
+  name: string;
+  phase: "call" | "result";
+  data: unknown;
+};
+
+/** Consumes the /api/chat SSE stream, calling onDelta for each text chunk
+ *  and onToolEvent for each tool call/result the agent makes along the way. */
+export async function streamChatMessage(
+  message: string,
+  history: ChatMessage[],
+  onDelta: (text: string) => void,
+  onToolEvent?: (event: ToolEvent) => void
+): Promise<ChatUsage> {
+  const res = await fetch(`${apiBase()}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history }),
+  });
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Chat failed (${res.status})`
+    );
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let usage: ChatUsage | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sepIndex;
+    while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+
+      const eventMatch = rawEvent.match(/^event: (.+)$/m);
+      const dataMatch = rawEvent.match(/^data: (.+)$/m);
+      if (!dataMatch) continue;
+
+      const event = eventMatch?.[1] ?? "message";
+      const data = JSON.parse(dataMatch[1]);
+
+      if (event === "delta") {
+        onDelta(data.text as string);
+      } else if (event === "tool_call") {
+        onToolEvent?.({ name: data.name, phase: "call", data: data.input });
+      } else if (event === "tool_result") {
+        onToolEvent?.({ name: data.name, phase: "result", data: data.output });
+      } else if (event === "done") {
+        usage = data as ChatUsage;
+      } else if (event === "error") {
+        throw new Error(data.message ?? "Chat stream error");
+      }
+    }
+  }
+
+  if (!usage) throw new Error("Stream ended without a completion event");
+  return usage;
+}
 
 export async function saveSettings(body: SavePayload): Promise<FullState> {
   const res = await fetch(`${apiBase()}/api/settings`, {

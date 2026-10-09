@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./backend/.env)",
+      "Read(./frontend/.env)",
+      "Read(./.env.local)",
+      "Read(./.env.development)",
+      "Read(./.env.production)",
+      "Read(./.env.staging)",
+      "Read(./.env.test)",
+      "Edit(./.env)",
+      "Edit(./backend/.env)",
+      "Edit(./frontend/.env)",
+      "Edit(./.env.local)",
+      "Edit(./.env.development)",
+      "Edit(./.env.production)",
+      "Edit(./.env.staging)",
+      "Edit(./.env.test)"
+    ]
+  },
+  "sandbox": {
+    "credentials": {
+      "files": [
+        { "path": ".env", "mode": "deny" },
+        { "path": "backend/.env", "mode": "deny" },
+        { "path": "frontend/.env", "mode": "deny" }
+      ]
+    }
+  }
+}

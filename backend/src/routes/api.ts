@@ -1,14 +1,19 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { pool } from "../db.js";
+import { runAgent } from "../agent.js";
+import { LLM_MODEL } from "../config.js";
 import {
-  buildProjection,
-  type FlowRow,
-  type InvestmentBucketRow,
-  type LumpSumRow,
-  type SettingsRow,
-  type SwpPlanRow,
-} from "../projection.js";
+  filterLumps,
+  loadFlows,
+  loadInvestmentBuckets,
+  loadLumpSumInflows,
+  loadLumpSumOutgoes,
+  loadSettings,
+  loadSwpPlans,
+} from "../data.js";
+import { pool } from "../db.js";
+import { buildProjection } from "../projection.js";
 
 const flowSchema = z.object({
   age: z.number().int().min(0).max(120),
@@ -32,10 +37,21 @@ const swpPlanSchema = z
     path: ["end_age"],
   });
 
+const chatMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+});
+
+const chatRequestSchema = z.object({
+  message: z.string().min(1),
+  history: z.array(chatMessageSchema).default([]),
+});
+
 const bucketSchema = z.object({
   name: z.string().max(200),
   corpus_lakhs: z.number().finite().nonnegative(),
   return_pct: z.number().finite(),
+  asset_class: z.enum(["equity", "debt", "cash"]).default("equity"),
 });
 
 const putBodySchema = z.object({
@@ -51,57 +67,13 @@ const putBodySchema = z.object({
 
 export const apiRouter = Router();
 
-async function loadSettings(): Promise<SettingsRow> {
-  const { rows } = await pool.query<SettingsRow>(
-    `SELECT inflation_pct, start_age, end_age FROM app_settings WHERE id = 1`
-  );
-  if (!rows[0]) throw new Error("Missing app_settings row");
-  return rows[0];
-}
-
-async function loadInvestmentBuckets(): Promise<InvestmentBucketRow[]> {
-  const { rows } = await pool.query<InvestmentBucketRow>(
-    `SELECT name, corpus_lakhs, return_pct FROM investment_buckets ORDER BY id`
-  );
-  return rows;
-}
-
-async function loadFlows(): Promise<FlowRow[]> {
-  const { rows } = await pool.query<FlowRow>(
-    `SELECT age, inflow_lakhs, outflow_lakhs FROM annual_flows ORDER BY age`
-  );
-  return rows;
-}
-
-async function loadLumpSumOutgoes(): Promise<LumpSumRow[]> {
-  const { rows } = await pool.query<LumpSumRow>(
-    `SELECT age, amount_lakhs FROM lump_sum_outgoes ORDER BY age, id`
-  );
-  return rows;
-}
-
-async function loadLumpSumInflows(): Promise<LumpSumRow[]> {
-  const { rows } = await pool.query<LumpSumRow>(
-    `SELECT age, amount_lakhs FROM lump_sum_inflows ORDER BY age, id`
-  );
-  return rows;
-}
-
-async function loadSwpPlans(): Promise<SwpPlanRow[]> {
-  const { rows } = await pool.query<SwpPlanRow>(
-    `SELECT start_age, end_age, monthly_amount_lakhs
-     FROM swp_plans ORDER BY start_age, id`
-  );
-  return rows;
-}
-
-function filterLumps(
-  lumps: { age: number; amount_lakhs: number }[],
-  startAge: number,
-  endAge: number
-) {
-  return lumps.filter((l) => l.age >= startAge && l.age <= endAge);
-}
+// Each request spends LLM credits, so cap it even for a single-user app.
+const chatLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 apiRouter.get("/settings", async (_req, res, next) => {
   try {
@@ -160,8 +132,8 @@ apiRouter.put("/settings", async (req, res, next) => {
     await client.query(`DELETE FROM investment_buckets`);
     for (const bucket of b.investment_buckets) {
       await client.query(
-        `INSERT INTO investment_buckets (name, corpus_lakhs, return_pct) VALUES ($1, $2, $3)`,
-        [bucket.name, bucket.corpus_lakhs, bucket.return_pct]
+        `INSERT INTO investment_buckets (name, corpus_lakhs, return_pct, asset_class) VALUES ($1, $2, $3, $4)`,
+        [bucket.name, bucket.corpus_lakhs, bucket.return_pct, bucket.asset_class]
       );
     }
     await client.query(`DELETE FROM annual_flows`);
@@ -235,6 +207,71 @@ apiRouter.put("/settings", async (req, res, next) => {
     next(e);
   } finally {
     client.release();
+  }
+});
+
+// Streams the agent's reply over SSE and logs every run to agent_runs,
+// including each tool call made along the way. The agent only calls tools
+// from ../tools.ts; buildProjection stays the only place that does the math.
+// Iterations/tokens are capped via AGENT_MAX_ITERATIONS and
+// AGENT_MAX_TOKENS_PER_CALL in ../config.ts so a confused loop can't spin.
+apiRouter.post("/chat", chatLimiter, async (req, res) => {
+  const parsed = chatRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  const { message, history } = parsed.data;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  function send(event: string, data: unknown) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  try {
+    const result = await runAgent(message, history, (event) => {
+      if (event.type === "delta") {
+        send("delta", { text: event.text });
+      } else if (event.type === "tool_call") {
+        send("tool_call", { name: event.name, input: event.input });
+      } else {
+        send("tool_result", { name: event.name, output: event.output });
+      }
+    });
+
+    const usage = {
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      model: LLM_MODEL,
+    };
+    console.log("hebbar tool calls: ", JSON.stringify(result.toolCalls));
+    await pool.query(
+      `INSERT INTO agent_runs (model, user_message, reply, tool_calls, input_tokens, output_tokens, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'ok')`,
+      [
+        LLM_MODEL,
+        message,
+        result.reply,
+        JSON.stringify(result.toolCalls),
+        usage.inputTokens,
+        usage.outputTokens,
+      ]
+    );
+    send("done", usage);
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : "Chat failed";
+    await pool.query(
+      `INSERT INTO agent_runs (model, user_message, status, error)
+       VALUES ($1, $2, 'error', $3)`,
+      [LLM_MODEL, message, errorMessage]
+    );
+    send("error", { message: errorMessage });
+  } finally {
+    res.end();
   }
 });
 
