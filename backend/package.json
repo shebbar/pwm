@@ -8,7 +8,8 @@
     "build": "tsc && cp -r src/migrations dist/migrations",
     "start": "node dist/index.js",
     "migrate": "tsx src/migrate.ts",
-    "tools:smoke": "tsx src/tools.smoke.ts"
+    "tools:smoke": "tsx src/tools.smoke.ts",
+    "evals": "tsx src/evals.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",

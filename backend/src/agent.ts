@@ -110,9 +110,9 @@ export async function runAgent(
     }
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
+   
     for (const block of toolUseBlocks) {
       onEvent({ type: "tool_call", name: block.name, input: block.input });
-
       let output: unknown;
       let isError = false;
       try {

@@ -248,7 +248,6 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
       outputTokens: result.outputTokens,
       model: LLM_MODEL,
     };
-    console.log("hebbar tool calls: ", JSON.stringify(result.toolCalls));
     await pool.query(
       `INSERT INTO agent_runs (model, user_message, reply, tool_calls, input_tokens, output_tokens, status)
        VALUES ($1, $2, $3, $4, $5, $6, 'ok')`,
