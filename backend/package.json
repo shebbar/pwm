@@ -9,10 +9,13 @@
     "start": "node dist/index.js",
     "migrate": "tsx src/migrate.ts",
     "tools:smoke": "tsx src/tools.smoke.ts",
-    "evals": "tsx src/evals.ts"
+    "evals": "tsx src/evals.ts",
+    "mcp": "tsx src/mcp-server.ts",
+    "mcp:start": "node dist/mcp-server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",

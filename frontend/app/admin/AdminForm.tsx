@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  activateLlmModel,
+  addLlmModel,
   fetchFullState,
+  fetchLlmModels,
+  removeLlmModel,
   saveSettings,
   type FullState,
   type InvestmentBucket,
+  type LlmModel,
   type LumpSum,
   type SavePayload,
   type SwpPlan,
@@ -73,6 +78,17 @@ export function AdminForm() {
   const [savingLumpIns, setSavingLumpIns] = useState(false);
   const [savingSwp, setSavingSwp] = useState(false);
 
+  const [llmModels, setLlmModels] = useState<LlmModel[]>([]);
+  const [availableVendors, setAvailableVendors] = useState<string[]>([]);
+  const [llmModelsLoading, setLlmModelsLoading] = useState(true);
+  const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [addingModel, setAddingModel] = useState(false);
+  const [newModelId, setNewModelId] = useState("");
+  const [newModelLabel, setNewModelLabel] = useState("");
+  const [newModelVendor, setNewModelVendor] = useState("");
+  const [newModelModelId, setNewModelModelId] = useState("");
+
   const applyState = useCallback((s: FullState) => {
     const buckets = bucketsToRows(s.investment_buckets ?? []);
     setBucketRows(
@@ -105,6 +121,68 @@ export function AdminForm() {
       cancelled = true;
     };
   }, [applyState]);
+
+  const loadLlmModels = useCallback(async () => {
+    try {
+      const { models, available_vendors } = await fetchLlmModels();
+      setLlmModels(models);
+      setAvailableVendors(available_vendors);
+      setNewModelVendor((v) => v || available_vendors[0] || "");
+    } catch (e) {
+      setLlmModelsError(e instanceof Error ? e.message : "Failed to load models");
+    } finally {
+      setLlmModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLlmModels();
+  }, [loadLlmModels]);
+
+  const handleActivateModel = async (id: string) => {
+    setActivatingId(id);
+    setLlmModelsError(null);
+    try {
+      await activateLlmModel(id);
+      await loadLlmModels();
+    } catch (e) {
+      setLlmModelsError(e instanceof Error ? e.message : "Activate failed");
+    } finally {
+      setActivatingId(null);
+    }
+  };
+
+  const handleRemoveModel = async (id: string) => {
+    setLlmModelsError(null);
+    try {
+      await removeLlmModel(id);
+      await loadLlmModels();
+    } catch (e) {
+      setLlmModelsError(e instanceof Error ? e.message : "Delete failed");
+    }
+  };
+
+  const handleAddModel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddingModel(true);
+    setLlmModelsError(null);
+    try {
+      await addLlmModel({
+        id: newModelId.trim(),
+        label: newModelLabel.trim(),
+        vendor: newModelVendor,
+        model_id: newModelModelId.trim(),
+      });
+      setNewModelId("");
+      setNewModelLabel("");
+      setNewModelModelId("");
+      await loadLlmModels();
+    } catch (e) {
+      setLlmModelsError(e instanceof Error ? e.message : "Add failed");
+    } finally {
+      setAddingModel(false);
+    }
+  };
 
   const mapBucketRows = (rows: BucketRow[]) =>
     rows.map((row) => ({
@@ -339,6 +417,7 @@ export function AdminForm() {
   }
 
   return (
+    <div className="space-y-8">
     <form onSubmit={onSave} className="space-y-8">
       {error && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200">
@@ -828,5 +907,174 @@ export function AdminForm() {
         </button>
       </div>
     </form>
+
+    <section>
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+        AI model
+      </h2>
+      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+        Which model answers what-if questions in chat. Switching here takes
+        effect immediately, no restart needed. Adding a model here only sets
+        up routing/labeling -- it still needs a tested token-budget entry in
+        code (llm/anthropic/models.ts) before it&apos;s safe to activate.
+      </p>
+
+      {llmModelsError && (
+        <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200">
+          {llmModelsError}
+        </p>
+      )}
+
+      {llmModelsLoading ? (
+        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+          Loading…
+        </p>
+      ) : (
+        <>
+          <label className="mt-4 block max-w-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Active model
+            </span>
+            <select
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              value={llmModels.find((m) => m.is_active)?.id ?? ""}
+              disabled={activatingId !== null}
+              onChange={(e) => void handleActivateModel(e.target.value)}
+            >
+              {llmModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+            <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+              <thead className="bg-zinc-50 dark:bg-zinc-900/50">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                    Label
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                    Vendor
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                    Model ID
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                    Active
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium text-zinc-600 dark:text-zinc-400">
+                    {/* remove */}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 bg-white dark:divide-zinc-800 dark:bg-zinc-950">
+                {llmModels.map((m) => (
+                  <tr key={m.id}>
+                    <td className="px-3 py-2">{m.label}</td>
+                    <td className="px-3 py-2 text-zinc-500 dark:text-zinc-400">
+                      {m.vendor}
+                    </td>
+                    <td className="px-3 py-2 text-zinc-500 dark:text-zinc-400">
+                      {m.model_id}
+                    </td>
+                    <td className="px-3 py-2">{m.is_active ? "✓" : ""}</td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveModel(m.id)}
+                        disabled={m.is_active}
+                        title={
+                          m.is_active
+                            ? "Activate a different model first"
+                            : "Remove"
+                        }
+                        className="rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:text-red-400 dark:hover:bg-red-950/50"
+                        aria-label="Remove model"
+                      >
+                        −
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <form
+            onSubmit={handleAddModel}
+            className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-end"
+          >
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                Id (slug)
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="e.g. claude-opus"
+                pattern="[a-z0-9-]+"
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                value={newModelId}
+                onChange={(e) => setNewModelId(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                Label
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Claude Opus"
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                value={newModelLabel}
+                onChange={(e) => setNewModelLabel(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                Vendor
+              </span>
+              <select
+                required
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                value={newModelVendor}
+                onChange={(e) => setNewModelVendor(e.target.value)}
+              >
+                {availableVendors.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                Model ID
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="e.g. claude-opus-4-8"
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                value={newModelModelId}
+                onChange={(e) => setNewModelModelId(e.target.value)}
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={addingModel}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-900"
+            >
+              {addingModel ? "Adding…" : "+ Add model"}
+            </button>
+          </form>
+        </>
+      )}
+    </section>
+    </div>
   );
 }

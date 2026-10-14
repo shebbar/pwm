@@ -185,6 +185,66 @@ export async function streamChatMessage(
   return usage;
 }
 
+export type LlmModel = {
+  id: string;
+  label: string;
+  vendor: string;
+  model_id: string;
+  is_active: boolean;
+};
+
+export async function fetchLlmModels(): Promise<{
+  models: LlmModel[];
+  available_vendors: string[];
+}> {
+  const res = await fetch(`${apiBase()}/api/llm-models`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
+export async function addLlmModel(input: {
+  id: string;
+  label: string;
+  vendor: string;
+  model_id: string;
+}): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/llm-models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Add model failed (${res.status})`
+    );
+  }
+}
+
+export async function activateLlmModel(id: string): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/llm-models/${encodeURIComponent(id)}/activate`, {
+    method: "PUT",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Activate failed (${res.status})`
+    );
+  }
+}
+
+export async function removeLlmModel(id: string): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/llm-models/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Delete failed (${res.status})`
+    );
+  }
+}
+
 export async function saveSettings(body: SavePayload): Promise<FullState> {
   const res = await fetch(`${apiBase()}/api/settings`, {
     method: "PUT",

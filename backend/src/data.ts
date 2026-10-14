@@ -120,3 +120,68 @@ export async function addExpense(input: AddExpenseInput): Promise<void> {
     [input.age, input.amount_lakhs]
   );
 }
+
+export type LlmModelRow = {
+  id: string;
+  label: string;
+  vendor: string;
+  model_id: string;
+  is_active: boolean;
+};
+
+export async function listLlmModels(): Promise<LlmModelRow[]> {
+  const { rows } = await pool.query<LlmModelRow>(
+    `SELECT id, label, vendor, model_id, is_active FROM llm_models ORDER BY created_at`
+  );
+  return rows;
+}
+
+export async function loadActiveLlmModel(): Promise<LlmModelRow | null> {
+  const { rows } = await pool.query<LlmModelRow>(
+    `SELECT id, label, vendor, model_id, is_active FROM llm_models WHERE is_active = true LIMIT 1`
+  );
+  return rows[0] ?? null;
+}
+
+export type AddLlmModelInput = {
+  id: string;
+  label: string;
+  vendor: string;
+  model_id: string;
+};
+
+export async function addLlmModel(input: AddLlmModelInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO llm_models (id, label, vendor, model_id) VALUES ($1, $2, $3, $4)`,
+    [input.id, input.label, input.vendor, input.model_id]
+  );
+}
+
+export async function activateLlmModel(id: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount } = await client.query(`SELECT 1 FROM llm_models WHERE id = $1`, [id]);
+    if (rowCount === 0) throw new Error(`No LLM model with id "${id}"`);
+    await client.query(`UPDATE llm_models SET is_active = false WHERE is_active = true`);
+    await client.query(`UPDATE llm_models SET is_active = true WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function removeLlmModel(id: string): Promise<void> {
+  const { rows } = await pool.query<{ is_active: boolean }>(
+    `SELECT is_active FROM llm_models WHERE id = $1`,
+    [id]
+  );
+  if (rows.length === 0) throw new Error(`No LLM model with id "${id}"`);
+  if (rows[0].is_active) {
+    throw new Error("Cannot delete the active model -- activate a different one first.");
+  }
+  await pool.query(`DELETE FROM llm_models WHERE id = $1`, [id]);
+}

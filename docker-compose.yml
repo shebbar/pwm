@@ -8,6 +8,8 @@
 #   docker compose up --build
 #
 # Browser uses http://localhost:3000 → API http://localhost:4000.
+# MCP server (Streamable HTTP, read-only tools, bearer-token auth) on http://localhost:4100/mcp.
+# Requires MCP_AUTH_TOKEN set in .env (e.g. `openssl rand -hex 32`).
 services:
   api:
     build:
@@ -22,9 +24,36 @@ services:
       # Chat agent's Claude Platform key, backend-only. Set in a repo-root
       # .env (see .env.example) -- never name it ANTHROPIC_API_KEY.
       PORTFOLIO_LLM_API_KEY: ${PORTFOLIO_LLM_API_KEY:-}
-      PORTFOLIO_LLM_MODEL: ${PORTFOLIO_LLM_MODEL:-claude-haiku-4-5-20251001}
+      # A registry key from llm/registry.ts ("claude-haiku" | "claude-sonnet"),
+      # NOT a raw Anthropic model ID anymore -- see config.ts.
+      PORTFOLIO_LLM_MODEL: ${PORTFOLIO_LLM_MODEL:-claude-haiku}
+      # The chat agent is itself an MCP client now -- it calls tools over
+      # the network via the mcp service rather than importing tools.ts
+      # directly, so it needs the same bearer token mcp-server.ts checks.
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp:4100/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
     ports:
       - "4000:4000"
+    depends_on:
+      - mcp
+    networks:
+      - pwm-net
+
+  mcp:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pwm-mcp
+    command: node dist/mcp-server.js
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://shebbar:hebbar123@pgdb:5432/pwm}
+      MCP_PORT: "4100"
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    ports:
+      # Host-side bound to loopback only -- not reachable from the rest of
+      # your LAN, just this machine. Defense in depth alongside the bearer
+      # token, not a replacement for it.
+      - "127.0.0.1:4100:4100"
     networks:
       - pwm-net
 

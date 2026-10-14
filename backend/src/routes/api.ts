@@ -2,17 +2,21 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { runAgent } from "../agent.js";
-import { LLM_MODEL } from "../config.js";
 import {
+  activateLlmModel,
+  addLlmModel,
   filterLumps,
+  listLlmModels,
   loadFlows,
   loadInvestmentBuckets,
   loadLumpSumInflows,
   loadLumpSumOutgoes,
   loadSettings,
   loadSwpPlans,
+  removeLlmModel,
 } from "../data.js";
 import { pool } from "../db.js";
+import { listVendors } from "../llm/registry.js";
 import { buildProjection } from "../projection.js";
 
 const flowSchema = z.object({
@@ -45,6 +49,17 @@ const chatMessageSchema = z.object({
 const chatRequestSchema = z.object({
   message: z.string().min(1),
   history: z.array(chatMessageSchema).default([]),
+});
+
+const addLlmModelSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, "lowercase letters, numbers, hyphens only"),
+  label: z.string().min(1).max(200),
+  vendor: z.string().min(1),
+  model_id: z.string().min(1),
 });
 
 const bucketSchema = z.object({
@@ -211,10 +226,12 @@ apiRouter.put("/settings", async (req, res, next) => {
 });
 
 // Streams the agent's reply over SSE and logs every run to agent_runs,
-// including each tool call made along the way. The agent only calls tools
-// from ../tools.ts; buildProjection stays the only place that does the math.
-// Iterations/tokens are capped via AGENT_MAX_ITERATIONS and
-// AGENT_MAX_TOKENS_PER_CALL in ../config.ts so a confused loop can't spin.
+// including each tool call made along the way. The agent calls tools over
+// MCP (see mcp-server.ts/tools.ts); buildProjection stays the only place
+// that does the math. AGENT_MAX_ITERATIONS in ../config.ts caps the loop so
+// a confused agent can't spin. Which model answers is resolved per-request
+// from the llm_models table (see llm/registry.ts), not a fixed config
+// value -- see result.provider below.
 apiRouter.post("/chat", chatLimiter, async (req, res) => {
   const parsed = chatRequestSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -246,13 +263,13 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
     const usage = {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
-      model: LLM_MODEL,
+      model: result.provider,
     };
     await pool.query(
       `INSERT INTO agent_runs (model, user_message, reply, tool_calls, input_tokens, output_tokens, status)
        VALUES ($1, $2, $3, $4, $5, $6, 'ok')`,
       [
-        LLM_MODEL,
+        result.provider,
         message,
         result.reply,
         JSON.stringify(result.toolCalls),
@@ -263,14 +280,68 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
     send("done", usage);
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Chat failed";
+    // If this threw before a provider was even resolved (e.g. an unknown
+    // DB-override value), there's no result.provider to log -- 'unknown'
+    // is a placeholder, not a guess at which model almost ran.
     await pool.query(
       `INSERT INTO agent_runs (model, user_message, status, error)
        VALUES ($1, $2, 'error', $3)`,
-      [LLM_MODEL, message, errorMessage]
+      ["unknown", message, errorMessage]
     );
     send("error", { message: errorMessage });
   } finally {
     res.end();
+  }
+});
+
+// The LLM model catalog: which models are available (data) and which one
+// is active (data) -- see llm/registry.ts. Editable live, no redeploy, e.g.
+// to fail over during a vendor outage. max_tokens is NOT managed here --
+// it's a tested, code-level fact per model (llm/anthropic/models.ts).
+apiRouter.get("/llm-models", async (_req, res, next) => {
+  try {
+    const models = await listLlmModels();
+    res.json({ models, available_vendors: listVendors() });
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.post("/llm-models", async (req, res, next) => {
+  const parsed = addLlmModelSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  if (!listVendors().includes(parsed.data.vendor)) {
+    res.status(400).json({
+      error: `Unknown vendor "${parsed.data.vendor}". Known: ${listVendors().join(", ")}`,
+    });
+    return;
+  }
+  try {
+    await addLlmModel(parsed.data);
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.put("/llm-models/:id/activate", async (req, res) => {
+  try {
+    await activateLlmModel(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Failed to activate model" });
+  }
+});
+
+apiRouter.delete("/llm-models/:id", async (req, res) => {
+  try {
+    await removeLlmModel(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Failed to delete model" });
   }
 });
 

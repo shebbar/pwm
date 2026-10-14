@@ -14,9 +14,9 @@
  * here means a known regression came back, not a novel one.
  */
 import "dotenv/config";
-import { LLM_MODEL } from "./config.js";
 import { initDatabase, pool } from "./db.js";
 import { runAgent, type ToolCallLog } from "./agent.js";
+import { getActiveProvider } from "./llm/registry.js";
 import { getTool } from "./tools.js";
 
 type CheckResult = { pass: boolean; detail: string };
@@ -168,7 +168,8 @@ async function main(): Promise<void> {
     }
   );
 
-  console.log(`\nEvals run against model: ${LLM_MODEL}\n`);
+  const activeProvider = await getActiveProvider();
+  console.log(`\nEvals run against provider: ${activeProvider.id}\n`);
   for (const r of results) {
     console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.name}\n      ${r.detail}\n`);
   }
