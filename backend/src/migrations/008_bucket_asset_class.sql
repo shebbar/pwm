@@ -1,5 +1,5 @@
 -- Asset class per bucket, so agents don't have to guess it from the bucket
--- name (e.g. "Sushma MF" vs "Equity MF" are both equity).
+-- name (e.g. "Orchid MF" vs "Equity MF" are both equity).
 ALTER TABLE investment_buckets
   ADD COLUMN IF NOT EXISTS asset_class TEXT NOT NULL DEFAULT 'equity';
 
@@ -14,7 +14,8 @@ BEGIN
   END IF;
 END $$;
 
--- Backfill the known real buckets by name (safe to re-run).
-UPDATE investment_buckets SET asset_class = 'equity' WHERE name IN ('Equity MF', 'Sushma MF');
-UPDATE investment_buckets SET asset_class = 'debt' WHERE name IN ('FD', 'Sushma FD');
+-- Backfill known bucket names from before this column existed (safe to
+-- re-run -- a name that doesn't exist in a given DB is just a no-op).
+UPDATE investment_buckets SET asset_class = 'equity' WHERE name IN ('Equity MF', 'Orchid MF');
+UPDATE investment_buckets SET asset_class = 'debt' WHERE name IN ('FD', 'Orchid FD');
 UPDATE investment_buckets SET asset_class = 'cash' WHERE name = 'Savings';

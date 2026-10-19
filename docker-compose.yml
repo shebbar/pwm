@@ -19,14 +19,11 @@ services:
     environment:
       # Override if your pgdb creds/db differ:
       # DATABASE_URL="postgresql://<username>:<password>@pgdb:5432/pwm"
-      DATABASE_URL: ${DATABASE_URL:-postgresql://shebbar:hebbar123@pgdb:5432/pwm}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@pgdb:5432/pwm}
       PORT: "4000"
       # Chat agent's Claude Platform key, backend-only. Set in a repo-root
       # .env (see .env.example) -- never name it ANTHROPIC_API_KEY.
       PORTFOLIO_LLM_API_KEY: ${PORTFOLIO_LLM_API_KEY:-}
-      # A registry key from llm/registry.ts ("claude-haiku" | "claude-sonnet"),
-      # NOT a raw Anthropic model ID anymore -- see config.ts.
-      PORTFOLIO_LLM_MODEL: ${PORTFOLIO_LLM_MODEL:-claude-haiku}
       # The chat agent is itself an MCP client now -- it calls tools over
       # the network via the mcp service rather than importing tools.ts
       # directly, so it needs the same bearer token mcp-server.ts checks.
@@ -46,7 +43,7 @@ services:
     container_name: pwm-mcp
     command: node dist/mcp-server.js
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://shebbar:hebbar123@pgdb:5432/pwm}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@pgdb:5432/pwm}
       MCP_PORT: "4100"
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
     ports:

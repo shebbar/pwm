@@ -112,7 +112,7 @@ async function main(): Promise<void> {
   );
 
   // Regression: "increase all equity returns" only touched the bucket literally
-  // named "Equity MF", missing "Sushma MF" -- a bucket name doesn't reliably
+  // named "Equity MF", missing "Orchid MF" -- a bucket name doesn't reliably
   // indicate asset class, asset_class does.
   await evalCase(
     "equity-return change covers every equity-class bucket (by asset_class, not name)",
