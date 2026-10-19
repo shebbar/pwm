@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   addExpense,
+  insertPendingAction,
   loadFlows,
   loadInvestmentBuckets,
   loadLumpSumInflows,
@@ -15,17 +16,23 @@ import {
   totalCorpusLakhs,
   weightedReturnPct,
   type InvestmentBucketRow,
+  type SettingsRow,
   type SwpPlanRow,
+  type YearPoint,
 } from "./projection.js";
 
 /**
  * The typed tool layer an agent (or an MCP server) calls instead of talking
  * SQL/HTTP directly. Every tool's math still goes through buildProjection --
  * these just assemble inputs for it and shape outputs. "write" tools mutate
- * the database and should go through a user-approval step before the
- * handler is ever invoked by an agent loop.
+ * the database directly and are never exposed to an agent (kept only for
+ * tools.smoke.ts and reuse by the approval endpoint); "propose" tools are
+ * what an agent actually calls -- they stage a pending_actions row and
+ * return its impact, never writing the real tables themselves. See
+ * routes/api.ts's /api/actions endpoints for the approve/reject step that
+ * turns a proposal into an actual write.
  */
-export type ToolKind = "read" | "write";
+export type ToolKind = "read" | "write" | "propose";
 
 export type Tool = {
   name: string;
@@ -259,6 +266,184 @@ const addExpenseTool = {
   },
 } satisfies Tool;
 
+// Guardrail bounds for proposals specifically -- the agent-reachable path.
+// Deliberately not applied to update_assumption/add_expense themselves,
+// since those are also used by the admin screen's own save path (via
+// routes/api.ts's PUT /settings, with its own bounds) and tools.smoke.ts.
+const INFLATION_PCT_RANGE = { min: 2, max: 12 };
+const BUCKET_RETURN_PCT_RANGE = { min: -5, max: 30 };
+const BUCKET_CORPUS_CAP_LAKHS = 100_000; // sanity ceiling (~Rs 1000 Cr), not a realistic plan size
+const EXPENSE_AMOUNT_CAP_LAKHS = 500; // ~Rs 5 Cr
+
+type ImpactSummary = { depletion_age: number | null; end_corpus_lakhs: number };
+
+function summarize(points: YearPoint[]): ImpactSummary {
+  return {
+    depletion_age: corpusDepletionAge(points),
+    end_corpus_lakhs: points[points.length - 1]?.endCorpusLakhs ?? 0,
+  };
+}
+
+/** Loads current data once, runs buildProjection twice (as-is, then with
+ *  the proposed change applied to an in-memory copy) -- never writes. */
+async function computeAssumptionImpact(
+  input: z.infer<typeof proposeUpdateAssumptionInput>
+): Promise<{ before: ImpactSummary; after: ImpactSummary }> {
+  const [settings, buckets, flows, lumpOut, lumpIn, swp] = await Promise.all([
+    loadSettings(),
+    loadInvestmentBuckets(),
+    loadFlows(),
+    loadLumpSumOutgoes(),
+    loadLumpSumInflows(),
+    loadSwpPlans(),
+  ]);
+
+  const before = summarize(buildProjection(settings, buckets, flows, lumpOut, lumpIn, swp));
+
+  let afterSettings: SettingsRow = settings;
+  let afterBuckets: InvestmentBucketRow[] = buckets;
+
+  if (input.kind === "settings") {
+    afterSettings = { ...settings };
+    if (input.field === "inflation_pct") afterSettings.inflation_pct = String(input.value);
+    else if (input.field === "start_age") afterSettings.start_age = input.value;
+    else afterSettings.end_age = input.value;
+  } else {
+    if (!buckets.some((b) => b.name === input.bucket_name)) {
+      throw new Error(`No investment bucket named "${input.bucket_name}"`);
+    }
+    afterBuckets = buckets.map((b) => {
+      if (b.name !== input.bucket_name) return b;
+      const updated = { ...b };
+      if (input.field === "corpus_lakhs") updated.corpus_lakhs = String(input.value);
+      else updated.return_pct = String(input.value);
+      return updated;
+    });
+  }
+
+  const after = summarize(
+    buildProjection(afterSettings, afterBuckets, flows, lumpOut, lumpIn, swp)
+  );
+  return { before, after };
+}
+
+async function computeExpenseImpact(
+  input: z.infer<typeof proposeAddExpenseInput>
+): Promise<{ before: ImpactSummary; after: ImpactSummary }> {
+  const [settings, buckets, flows, lumpOut, lumpIn, swp] = await Promise.all([
+    loadSettings(),
+    loadInvestmentBuckets(),
+    loadFlows(),
+    loadLumpSumOutgoes(),
+    loadLumpSumInflows(),
+    loadSwpPlans(),
+  ]);
+
+  const before = summarize(buildProjection(settings, buckets, flows, lumpOut, lumpIn, swp));
+  const afterLumpOut = [...lumpOut, { age: input.age, amount_lakhs: String(input.amount_lakhs) }];
+  const after = summarize(
+    buildProjection(settings, buckets, flows, afterLumpOut, lumpIn, swp)
+  );
+  return { before, after };
+}
+
+// Same shape as updateAssumptionInput, plus guardrail bounds via
+// superRefine (the bound depends on kind+field together, which a plain
+// z.enum/z.number chain on "value" alone can't express).
+const proposeUpdateAssumptionInput = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("settings"),
+      field: z.enum(["inflation_pct", "start_age", "end_age"]),
+      value: z.number().finite(),
+    }),
+    z.object({
+      kind: z.literal("bucket"),
+      bucket_name: z.string(),
+      field: z.enum(["corpus_lakhs", "return_pct"]),
+      value: z.number().finite(),
+    }),
+  ])
+  .superRefine((input, ctx) => {
+    if (input.kind === "settings") {
+      if (
+        input.field === "inflation_pct" &&
+        (input.value < INFLATION_PCT_RANGE.min || input.value > INFLATION_PCT_RANGE.max)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `inflation_pct must be between ${INFLATION_PCT_RANGE.min} and ${INFLATION_PCT_RANGE.max}`,
+        });
+      }
+      if (input.field === "start_age" && (input.value < 18 || input.value > 100)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "start_age must be between 18 and 100" });
+      }
+      if (input.field === "end_age" && (input.value < 18 || input.value > 120)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "end_age must be between 18 and 120" });
+      }
+    } else {
+      if (
+        input.field === "return_pct" &&
+        (input.value < BUCKET_RETURN_PCT_RANGE.min || input.value > BUCKET_RETURN_PCT_RANGE.max)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `return_pct must be between ${BUCKET_RETURN_PCT_RANGE.min} and ${BUCKET_RETURN_PCT_RANGE.max}`,
+        });
+      }
+      if (
+        input.field === "corpus_lakhs" &&
+        (input.value < 0 || input.value > BUCKET_CORPUS_CAP_LAKHS)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `corpus_lakhs must be between 0 and ${BUCKET_CORPUS_CAP_LAKHS}`,
+        });
+      }
+    }
+  });
+
+const proposeUpdateAssumptionTool = {
+  name: "propose_update_assumption",
+  description:
+    "PROPOSE: stages an app_settings field (inflation_pct/start_age/end_age) or a bucket's corpus_lakhs/return_pct change for human approval -- does NOT write anything. Returns pending_action_id plus the before/after projection impact (depletion_age, end_corpus_lakhs); relay both to the user and tell them it needs approval before it takes effect. Guardrails: inflation_pct 2-12, bucket return_pct -5 to 30, bucket corpus_lakhs 0-100000 lakhs -- out-of-range values are rejected before a proposal is even created.",
+  kind: "propose",
+  inputSchema: proposeUpdateAssumptionInput,
+  handler: async (input: z.infer<typeof proposeUpdateAssumptionInput>) => {
+    const { before, after } = await computeAssumptionImpact(input);
+    const pending_action_id = await insertPendingAction({
+      toolName: "propose_update_assumption",
+      proposedInput: input,
+      beforeSummary: before,
+      afterSummary: after,
+    });
+    return { pending_action_id, status: "pending", before, after };
+  },
+} satisfies Tool;
+
+const proposeAddExpenseInput = z.object({
+  age: z.number().int().min(0).max(120),
+  amount_lakhs: z.number().finite().positive().max(EXPENSE_AMOUNT_CAP_LAKHS),
+});
+
+const proposeAddExpenseTool = {
+  name: "propose_add_expense",
+  description:
+    "PROPOSE: stages a one-off expense (lump sum outgo) at a given age for human approval -- does NOT write anything. Returns pending_action_id plus the before/after projection impact (depletion_age, end_corpus_lakhs); relay both to the user and tell them it needs approval before it takes effect. Guardrail: amount capped at 500 lakhs -- larger amounts are rejected before a proposal is even created.",
+  kind: "propose",
+  inputSchema: proposeAddExpenseInput,
+  handler: async (input: z.infer<typeof proposeAddExpenseInput>) => {
+    const { before, after } = await computeExpenseImpact(input);
+    const pending_action_id = await insertPendingAction({
+      toolName: "propose_add_expense",
+      proposedInput: input,
+      beforeSummary: before,
+      afterSummary: after,
+    });
+    return { pending_action_id, status: "pending", before, after };
+  },
+} satisfies Tool;
+
 export const tools: Tool[] = [
   getPortfolioTool,
   getBucketsTool,
@@ -266,6 +451,8 @@ export const tools: Tool[] = [
   runProjectionTool,
   updateAssumptionTool,
   addExpenseTool,
+  proposeUpdateAssumptionTool,
+  proposeAddExpenseTool,
 ];
 
 export function getTool(name: string): Tool | undefined {

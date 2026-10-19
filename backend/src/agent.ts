@@ -14,9 +14,16 @@ hypothetical "assumptions" and a "horizon") for any numeric answer about the
 plan. Use get_portfolio/get_buckets/get_expenses to look up current data
 before reasoning about it.
 
-This session only has read tools. If asked to change saved data (update an
-assumption, add an expense), explain that writes aren't supported from chat
-yet and that the change would need to be made in the admin screen.`;
+If asked to change saved data (update an assumption, add an expense), call
+propose_update_assumption or propose_add_expense instead of just answering --
+these do NOT write anything themselves, they stage the change and return its
+projected before/after impact (depletion age, corpus at end age). Always
+state that clearly in your reply: tell the user what you proposed, show the
+before/after impact, and say the change needs their approval in the chat UI
+before it takes effect. Never say or imply that you already made the change.
+If a proposal is rejected by the guardrails (e.g. an inflation rate or
+expense amount outside the allowed range), relay the error and explain why,
+rather than retrying with the same value.`;
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -36,6 +43,11 @@ export type AgentResult = {
    *  dynamic now that it can change per-request via the DB override, so
    *  callers must read this instead of assuming a static config value. */
   provider: string;
+  /** pending_actions ids created by propose_* tool calls during this run.
+   *  agent_runs doesn't exist yet while this loop is running (it's written
+   *  by the caller once runAgent returns), so the caller links these to
+   *  its new agent_runs row after the fact -- see routes/api.ts. */
+  proposedActionIds: number[];
 };
 
 /**
@@ -80,6 +92,7 @@ export async function runAgent(
     let inputTokens = 0;
     let outputTokens = 0;
     const toolCalls: ToolCallLog[] = [];
+    const proposedActionIds: number[] = [];
 
     for (let iteration = 0; iteration < AGENT_MAX_ITERATIONS; iteration++) {
       const request: CompletionRequest = {
@@ -117,7 +130,14 @@ export async function runAgent(
               "entry in llm/anthropic/models.ts, or try a simpler question."
           );
         }
-        return { reply, inputTokens, outputTokens, toolCalls, provider: provider.id };
+        return {
+          reply,
+          inputTokens,
+          outputTokens,
+          toolCalls,
+          provider: provider.id,
+          proposedActionIds,
+        };
       }
 
       const toolResultBlocks: ContentBlock[] = [];
@@ -155,6 +175,12 @@ export async function runAgent(
 
         onEvent({ type: "tool_result", name: block.name, output });
         toolCalls.push({ name: block.name, input: block.input, output });
+
+        const pendingActionId = (output as { pending_action_id?: unknown } | null)
+          ?.pending_action_id;
+        if (typeof pendingActionId === "number") {
+          proposedActionIds.push(pendingActionId);
+        }
         toolResultBlocks.push({
           type: "tool_result",
           toolUseId: block.id,

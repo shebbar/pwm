@@ -18,19 +18,24 @@
  * that doesn't exist here.
  */
 import "dotenv/config";
-import { timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { safeTokenEqual } from "./auth.js";
 import { MCP_AUTH_TOKEN } from "./config.js";
 import { initDatabase } from "./db.js";
 import { tools } from "./tools.js";
 
-// Mirrors agent.ts: read-only for now. Write tools need an approval
-// mechanism this server doesn't have either -- Claude Desktop's own
-// per-call confirmation UI could stand in for that later, but that's a
-// deliberate decision to make, not a default.
-const MCP_TOOLS = tools.filter((t) => t.kind === "read");
+// Read tools are safe for any MCP client. Propose tools only ever stage a
+// pending_actions row (see tools.ts) -- they never write the real tables,
+// so they're exposed here too; the actual write happens through this app's
+// own /api/actions/:id/approve, not through MCP. "write" tools
+// (update_assumption/add_expense) are deliberately never exposed over MCP
+// at all -- not even to this app's own agent, which only reaches them
+// indirectly via the approval endpoint. Until Phase 2 adds scoped tokens,
+// any MCP client with the one shared token (e.g. Claude Desktop) can call
+// propose tools same as the in-app agent can.
+const MCP_TOOLS = tools.filter((t) => t.kind === "read" || t.kind === "propose");
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "pwm", version: "1.0.0" });
@@ -67,17 +72,6 @@ const PORT = Number(process.env.MCP_PORT ?? 4100);
 
 function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0" as const, error: { code, message }, id: null };
-}
-
-function safeTokenEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  // Length mismatch is checked before timingSafeEqual because it throws on
-  // unequal-length buffers rather than returning false. A token's length
-  // isn't itself a meaningful secret, so this short-circuit is standard
-  // practice for this kind of check.
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
 }
 
 async function main(): Promise<void> {
