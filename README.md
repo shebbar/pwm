@@ -57,9 +57,11 @@ docker-compose.yml
 This expects a Postgres container named `pgdb` already running on an external `pwm-net` Docker network (see the comment block at the top of `docker-compose.yml`):
 
 ```bash
+cp .env.example .env   # fill in PORTFOLIO_LLM_API_KEY and MCP_AUTH_TOKEN
 docker network create pwm-net || true
 docker compose -f ~/systems/postgres/docker-compose.yml up -d   # or however you run Postgres
 docker compose up --build
+cd backend && npm run seed:demo   # loads a fictional portfolio so there's data to look at
 ```
 
 Dashboard: http://localhost:3000 — API: http://localhost:4000 — MCP server: http://localhost:4100/mcp
@@ -85,6 +87,7 @@ There's deliberately no env var for which model is active — that's entirely DB
 
 ```bash
 cd backend && npm run migrate       # apply migrations without starting the server
+cd backend && npm run seed:demo     # wipe the portfolio tables and load a fictional demo portfolio
 cd backend && npm run tools:smoke   # exercise every agent tool against live data (read tools + a safe write round-trip)
 cd backend && npm run evals         # golden-question regression suite against the real Claude API (costs credits)
 cd backend && npm run mcp           # run the MCP server standalone, outside Docker (dev mode)
@@ -92,7 +95,7 @@ cd backend && npm run mcp           # run the MCP server standalone, outside Doc
 
 ## Status
 
-Working: projection engine, admin screen, dashboard, a what-if chat agent (read-only tools via an MCP client connection, audit-logged, SSE-streamed), an eval suite (golden questions tied to real regressions, run manually against the live API), a bearer-token-authenticated MCP server over Streamable HTTP that both the in-app agent and external clients (Claude Desktop) call into, and a model-choice abstraction (`llm/`) with a DB-driven catalog of available models, editable from the admin screen with zero redeploy to switch. Not yet built: a write-tool approval UI (so the MCP server could expose `update_assumption`/`add_expense` to a client that can handle per-call confirmation), a real second LLM vendor (the abstraction currently has two configs of the same vendor, deliberately treated as separate ones to prove the interface), scheduled/unattended agents, and multi-agent patterns (e.g. an assumption critic that verifies the first agent's claims).
+Working: projection engine, admin screen, dashboard, a what-if chat agent (read-only tools via an MCP client connection, audit-logged, SSE-streamed), an eval suite (golden questions tied to real regressions, run manually against the live API), a bearer-token-authenticated MCP server over Streamable HTTP that both the in-app agent and external clients (Claude Desktop) call into, a model-choice abstraction (`llm/`) with a DB-driven catalog of available models, editable from the admin screen with zero redeploy to switch, and a demo seed (`npm run seed:demo`) so a fresh clone has a fictional portfolio to run the app/evals against without any real financial data in the repo. Not yet built: a write-tool approval UI (so the MCP server could expose `update_assumption`/`add_expense` to a client that can handle per-call confirmation), a real second LLM vendor (the abstraction currently has two configs of the same vendor, deliberately treated as separate ones to prove the interface), scheduled/unattended agents, and multi-agent patterns (e.g. an assumption critic that verifies the first agent's claims).
 
 ## License
 
