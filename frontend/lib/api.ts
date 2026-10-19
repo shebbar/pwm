@@ -193,6 +193,73 @@ export type LlmModel = {
   is_active: boolean;
 };
 
+export type ImpactSummary = { depletion_age: number | null; end_corpus_lakhs: number };
+
+export type PendingAction = {
+  id: number;
+  agent_run_id: number | null;
+  tool_name: string;
+  proposed_input: unknown;
+  before_summary: ImpactSummary;
+  after_summary: ImpactSummary;
+  status: "pending" | "approved" | "rejected" | "expired";
+  reason: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_at: string;
+  expires_at: string;
+};
+
+// Baked into the JS bundle at build time (see docker-compose.yml /
+// frontend/Dockerfile) -- not a real secret once it's shipped to the
+// browser, just enough to stop a blind/automated request from hitting
+// /api/actions/*. See backend/src/routes/api.ts's requireActionsAuth.
+function actionsAuthHeaders(): Record<string, string> {
+  const token = process.env.NEXT_PUBLIC_ACTIONS_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export async function fetchPendingActions(
+  status?: PendingAction["status"]
+): Promise<PendingAction[]> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  const res = await fetch(`${apiBase()}/api/actions${qs}`, {
+    cache: "no-store",
+    headers: actionsAuthHeaders(),
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = (await res.json()) as { actions: PendingAction[] };
+  return data.actions;
+}
+
+async function decideAction(
+  id: number,
+  decision: "approve" | "reject",
+  reason?: string
+): Promise<PendingAction> {
+  const res = await fetch(`${apiBase()}/api/actions/${id}/${decision}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...actionsAuthHeaders() },
+    body: JSON.stringify(reason ? { reason } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `${decision} failed (${res.status})`
+    );
+  }
+  const data = (await res.json()) as { action: PendingAction };
+  return data.action;
+}
+
+export function approveAction(id: number): Promise<PendingAction> {
+  return decideAction(id, "approve");
+}
+
+export function rejectAction(id: number, reason?: string): Promise<PendingAction> {
+  return decideAction(id, "reject", reason);
+}
+
 export async function fetchLlmModels(): Promise<{
   models: LlmModel[];
   available_vendors: string[];

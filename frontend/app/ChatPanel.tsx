@@ -1,7 +1,84 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { streamChatMessage, type ChatMessage } from "@/lib/api";
+import {
+  approveAction,
+  fetchPendingActions,
+  rejectAction,
+  streamChatMessage,
+  type ChatMessage,
+  type PendingAction,
+} from "@/lib/api";
+
+const PROPOSE_TOOL_NAMES = ["propose_update_assumption", "propose_add_expense"];
+
+function describeProposedInput(toolName: string, input: unknown): string {
+  const i = input as Record<string, unknown>;
+  if (toolName === "propose_add_expense") {
+    return `Add a one-off expense of ₹${i.amount_lakhs}L at age ${i.age}`;
+  }
+  if (toolName === "propose_update_assumption") {
+    if (i.kind === "settings") {
+      return `Set ${i.field} to ${i.value}`;
+    }
+    return `Set ${i.bucket_name}'s ${i.field} to ${i.value}`;
+  }
+  return toolName;
+}
+
+function ProposalCard({
+  action,
+  busy,
+  onApprove,
+  onReject,
+}: {
+  action: PendingAction;
+  busy: boolean;
+  onApprove: (id: number) => void;
+  onReject: (id: number) => void;
+}) {
+  const fmtAge = (age: number | null) => (age === null ? "never depletes" : `depletes at ${age}`);
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
+      <p className="font-medium text-amber-900 dark:text-amber-100">
+        {describeProposedInput(action.tool_name, action.proposed_input)}
+      </p>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-amber-800 dark:text-amber-200">
+        <div>
+          <p className="font-semibold">Before</p>
+          <p>{fmtAge(action.before_summary.depletion_age)}</p>
+          <p>Corpus at end age: ₹{action.before_summary.end_corpus_lakhs}L</p>
+        </div>
+        <div>
+          <p className="font-semibold">After</p>
+          <p>{fmtAge(action.after_summary.depletion_age)}</p>
+          <p>Corpus at end age: ₹{action.after_summary.end_corpus_lakhs}L</p>
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+        Expires at {new Date(action.expires_at).toLocaleTimeString()}
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onApprove(action.id)}
+          className="rounded-md bg-amber-900 px-3 py-1 text-xs font-medium text-white hover:bg-amber-800 disabled:opacity-50 dark:bg-amber-100 dark:text-amber-900"
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onReject(action.id)}
+          className="rounded-md border border-amber-300 px-3 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:text-amber-100 dark:hover:bg-amber-900/40"
+        >
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -9,11 +86,49 @@ export default function ChatPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toolActivity, setToolActivity] = useState<string[]>([]);
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [busyActionId, setBusyActionId] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  function refreshPendingActions() {
+    fetchPendingActions("pending")
+      .then(setPendingActions)
+      .catch(() => {
+        // Non-fatal: the chat itself still works without this list.
+      });
+  }
+
+  useEffect(() => {
+    refreshPendingActions();
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, loading]);
+  }, [messages, loading, pendingActions]);
+
+  async function handleApprove(id: number) {
+    setBusyActionId(id);
+    try {
+      await approveAction(id);
+      setPendingActions((list) => list.filter((a) => a.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Approve failed");
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
+  async function handleReject(id: number) {
+    setBusyActionId(id);
+    try {
+      await rejectAction(id);
+      setPendingActions((list) => list.filter((a) => a.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Reject failed");
+    } finally {
+      setBusyActionId(null);
+    }
+  }
 
   async function handleSend() {
     const text = input.trim();
@@ -49,6 +164,9 @@ export default function ChatPanel() {
             copy[idx] = `Called ${toolEvent.name}`;
             return copy;
           });
+          if (toolEvent.phase === "result" && PROPOSE_TOOL_NAMES.includes(toolEvent.name)) {
+            refreshPendingActions();
+          }
         }
       );
     } catch (e) {
@@ -109,6 +227,15 @@ export default function ChatPanel() {
             ))}
           </div>
         )}
+        {pendingActions.map((action) => (
+          <ProposalCard
+            key={action.id}
+            action={action}
+            busy={busyActionId === action.id}
+            onApprove={handleApprove}
+            onReject={handleReject}
+          />
+        ))}
       </div>
 
       {error && (

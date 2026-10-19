@@ -29,6 +29,11 @@ services:
       # directly, so it needs the same bearer token mcp-server.ts checks.
       MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp:4100/mcp}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      # Guards /api/actions/* (approve/reject proposals) -- separate token
+      # from MCP_AUTH_TOKEN since the caller here is the browser, not
+      # another backend process. Must match frontend's build-time
+      # NEXT_PUBLIC_ACTIONS_TOKEN below.
+      ACTIONS_AUTH_TOKEN: ${ACTIONS_AUTH_TOKEN:-}
     ports:
       - "4000:4000"
     depends_on:
@@ -61,6 +66,11 @@ services:
       args:
         # Browser (your machine) → API on host port 4000
         NEXT_PUBLIC_API_URL: http://localhost:4000
+        # Baked into the JS bundle at build time -- must match the api
+        # service's ACTIONS_AUTH_TOKEN above. See routes/api.ts's comment
+        # on requireActionsAuth for why this level of protection is enough
+        # here (not a real secret, just stops blind/automated requests).
+        NEXT_PUBLIC_ACTIONS_TOKEN: ${ACTIONS_AUTH_TOKEN:-}
     container_name: pwm-frontend
     environment:
       # Next.js server-side fetch inside this container → API service on Docker network
