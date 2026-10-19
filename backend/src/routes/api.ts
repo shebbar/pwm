@@ -1,19 +1,26 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { runAgent } from "../agent.js";
+import { safeTokenEqual } from "../auth.js";
+import { ACTIONS_AUTH_TOKEN } from "../config.js";
 import {
   activateLlmModel,
   addLlmModel,
+  approvePendingAction,
   filterLumps,
+  linkPendingActionsToRun,
   listLlmModels,
+  listPendingActions,
   loadFlows,
   loadInvestmentBuckets,
   loadLumpSumInflows,
   loadLumpSumOutgoes,
   loadSettings,
   loadSwpPlans,
+  rejectPendingAction,
   removeLlmModel,
+  type PendingActionStatus,
 } from "../data.js";
 import { pool } from "../db.js";
 import { listVendors } from "../llm/registry.js";
@@ -80,6 +87,17 @@ const putBodySchema = z.object({
   swp_plans: z.array(swpPlanSchema).default([]),
 });
 
+const rejectActionSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+
+const PENDING_ACTION_STATUSES: PendingActionStatus[] = [
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+];
+
 export const apiRouter = Router();
 
 // Each request spends LLM credits, so cap it even for a single-user app.
@@ -89,6 +107,27 @@ const chatLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// Separate trust boundary from MCP_AUTH_TOKEN: this guards the actual
+// write-triggering step (approve) plus list/reject, called from the
+// browser rather than server-to-server. The token is baked into the
+// frontend build (NEXT_PUBLIC_ACTIONS_TOKEN) -- visible to anyone with
+// devtools on this machine, same practical protection level this app
+// already accepts for MCP's shared secret, just stopping anything that
+// isn't the app's own UI from hitting these endpoints blind.
+function requireActionsAuth(req: Request, res: Response, next: NextFunction) {
+  if (!ACTIONS_AUTH_TOKEN) {
+    res.status(500).json({ error: "ACTIONS_AUTH_TOKEN is not configured on the server" });
+    return;
+  }
+  const header = req.header("authorization") ?? "";
+  const [scheme, token] = header.split(" ");
+  if (scheme !== "Bearer" || !token || !safeTokenEqual(token, ACTIONS_AUTH_TOKEN)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  next();
+}
 
 apiRouter.get("/settings", async (_req, res, next) => {
   try {
@@ -265,9 +304,9 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
       outputTokens: result.outputTokens,
       model: result.provider,
     };
-    await pool.query(
+    const { rows } = await pool.query<{ id: number }>(
       `INSERT INTO agent_runs (model, user_message, reply, tool_calls, input_tokens, output_tokens, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'ok')`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'ok') RETURNING id`,
       [
         result.provider,
         message,
@@ -277,6 +316,9 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
         usage.outputTokens,
       ]
     );
+    // pending_actions rows (if any propose_* tool was called) exist before
+    // this agent_runs row does -- link them now that it has an id.
+    await linkPendingActionsToRun(rows[0].id, result.proposedActionIds);
     send("done", usage);
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Chat failed";
@@ -363,6 +405,79 @@ apiRouter.get("/projection", async (_req, res, next) => {
         swp_plans
       ),
     });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Human-in-the-loop approvals: propose_* tools (tools.ts) only ever create
+// a pending_actions row -- nothing is written to the real plan until one
+// of these two endpoints is called. "owner" is a placeholder decided_by --
+// there's no multi-user auth in this app, see ACTIONS_AUTH_TOKEN's comment
+// above for the actual access control.
+apiRouter.use("/actions", requireActionsAuth);
+
+apiRouter.get("/actions", async (req, res, next) => {
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  if (status && !PENDING_ACTION_STATUSES.includes(status as PendingActionStatus)) {
+    res.status(400).json({ error: `Unknown status "${status}". Known: ${PENDING_ACTION_STATUSES.join(", ")}` });
+    return;
+  }
+  try {
+    const actions = await listPendingActions(status as PendingActionStatus | undefined);
+    res.json({ actions });
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.post("/actions/:id/approve", async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Invalid action id" });
+    return;
+  }
+  try {
+    const result = await approvePendingAction(id, "owner");
+    if (result.outcome === "not_found") {
+      res.status(404).json({ error: "No such pending action" });
+      return;
+    }
+    if (result.outcome === "expired") {
+      res.status(409).json({ error: "This proposal has expired", action: result.row });
+      return;
+    }
+    // "already_decided" and "decided" both just report the row's current
+    // state -- approving twice (or approving an already-rejected action)
+    // is a no-op, not an error, so a double-click can't double-apply a write.
+    res.json({ action: result.row });
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.post("/actions/:id/reject", async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Invalid action id" });
+    return;
+  }
+  const parsed = rejectActionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const result = await rejectPendingAction(id, "owner", parsed.data.reason);
+    if (result.outcome === "not_found") {
+      res.status(404).json({ error: "No such pending action" });
+      return;
+    }
+    if (result.outcome === "expired") {
+      res.status(409).json({ error: "This proposal has expired", action: result.row });
+      return;
+    }
+    res.json({ action: result.row });
   } catch (e) {
     next(e);
   }
