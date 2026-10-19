@@ -21,3 +21,15 @@ export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN ?? "";
 // Where agent.ts reaches the MCP server as a client. Docker service name,
 // not localhost -- this crosses a container boundary.
 export const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? "http://mcp:4100/mcp";
+
+// How long a proposed action stays approvable before it lazily expires.
+export const PENDING_ACTION_TTL_MINUTES = Number(
+  process.env.PENDING_ACTION_TTL_MINUTES ?? 30
+);
+
+// Separate secret from MCP_AUTH_TOKEN on purpose -- this guards a different
+// trust boundary (the chat UI's own approve/reject calls, made from a
+// browser) rather than the MCP server-to-server connection. No default: the
+// approve/reject/list endpoints refuse to work without one set, same
+// philosophy as MCP_AUTH_TOKEN.
+export const ACTIONS_AUTH_TOKEN = process.env.ACTIONS_AUTH_TOKEN ?? "";

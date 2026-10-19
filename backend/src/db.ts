@@ -74,6 +74,7 @@ const MIGRATION_FILES = [
   "008_bucket_asset_class.sql",
   "009_agent_config.sql",
   "010_llm_models.sql",
+  "011_pending_actions.sql",
 ];
 
 export async function runMigrations(): Promise<void> {
