@@ -287,7 +287,7 @@ function summarize(points: YearPoint[]): ImpactSummary {
 /** Loads current data once, runs buildProjection twice (as-is, then with
  *  the proposed change applied to an in-memory copy) -- never writes. */
 async function computeAssumptionImpact(
-  input: z.infer<typeof proposeUpdateAssumptionInput>
+  input: ProposeUpdateAssumptionInput
 ): Promise<{ before: ImpactSummary; after: ImpactSummary }> {
   const [settings, buckets, flows, lumpOut, lumpIn, swp] = await Promise.all([
     loadSettings(),
@@ -309,11 +309,15 @@ async function computeAssumptionImpact(
     else if (input.field === "start_age") afterSettings.start_age = input.value;
     else afterSettings.end_age = input.value;
   } else {
-    if (!buckets.some((b) => b.name === input.bucket_name)) {
-      throw new Error(`No investment bucket named "${input.bucket_name}"`);
+    // validateProposeUpdateAssumption already required this for kind
+    // "bucket" -- this check is defense in depth, not the primary guard.
+    const bucketName = input.bucket_name;
+    if (!bucketName) throw new Error('bucket_name is required when kind is "bucket"');
+    if (!buckets.some((b) => b.name === bucketName)) {
+      throw new Error(`No investment bucket named "${bucketName}"`);
     }
     afterBuckets = buckets.map((b) => {
-      if (b.name !== input.bucket_name) return b;
+      if (b.name !== bucketName) return b;
       const updated = { ...b };
       if (input.field === "corpus_lakhs") updated.corpus_lakhs = String(input.value);
       else updated.return_pct = String(input.value);
@@ -347,61 +351,68 @@ async function computeExpenseImpact(
   return { before, after };
 }
 
-// Same shape as updateAssumptionInput, plus guardrail bounds via
-// superRefine (the bound depends on kind+field together, which a plain
-// z.enum/z.number chain on "value" alone can't express).
-const proposeUpdateAssumptionInput = z
-  .discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("settings"),
-      field: z.enum(["inflation_pct", "start_age", "end_age"]),
-      value: z.number().finite(),
-    }),
-    z.object({
-      kind: z.literal("bucket"),
-      bucket_name: z.string(),
-      field: z.enum(["corpus_lakhs", "return_pct"]),
-      value: z.number().finite(),
-    }),
-  ])
-  .superRefine((input, ctx) => {
-    if (input.kind === "settings") {
-      if (
-        input.field === "inflation_pct" &&
-        (input.value < INFLATION_PCT_RANGE.min || input.value > INFLATION_PCT_RANGE.max)
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `inflation_pct must be between ${INFLATION_PCT_RANGE.min} and ${INFLATION_PCT_RANGE.max}`,
-        });
-      }
-      if (input.field === "start_age" && (input.value < 18 || input.value > 100)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "start_age must be between 18 and 100" });
-      }
-      if (input.field === "end_age" && (input.value < 18 || input.value > 120)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "end_age must be between 18 and 120" });
-      }
-    } else {
-      if (
-        input.field === "return_pct" &&
-        (input.value < BUCKET_RETURN_PCT_RANGE.min || input.value > BUCKET_RETURN_PCT_RANGE.max)
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `return_pct must be between ${BUCKET_RETURN_PCT_RANGE.min} and ${BUCKET_RETURN_PCT_RANGE.max}`,
-        });
-      }
-      if (
-        input.field === "corpus_lakhs" &&
-        (input.value < 0 || input.value > BUCKET_CORPUS_CAP_LAKHS)
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `corpus_lakhs must be between 0 and ${BUCKET_CORPUS_CAP_LAKHS}`,
-        });
-      }
+// Deliberately a flat object, NOT z.discriminatedUnion(...) -- the MCP SDK
+// advertises a tool's parameters by reading inputSchema.shape, which only
+// ZodObject has. A discriminated union (or a flat object wrapped in
+// .superRefine(), which also returns a non-ZodObject ZodEffects) has no
+// .shape, so the tool gets advertised with zero parameters even though
+// runtime validation still works -- confirmed live: Claude Desktop could
+// call this tool, but only by guessing the argument shape from error
+// messages, since `tools/list` showed `{}`. Guardrail bounds are therefore
+// checked in validateProposeUpdateAssumption() below, as plain code, not
+// zod refinement.
+const proposeUpdateAssumptionInput = z.object({
+  kind: z.enum(["settings", "bucket"]),
+  field: z.enum(["inflation_pct", "start_age", "end_age", "corpus_lakhs", "return_pct"]),
+  value: z.number().finite(),
+  bucket_name: z
+    .string()
+    .optional()
+    .describe('Required when kind is "bucket" -- ignored when kind is "settings".'),
+});
+
+type ProposeUpdateAssumptionInput = z.infer<typeof proposeUpdateAssumptionInput>;
+
+function validateProposeUpdateAssumption(input: ProposeUpdateAssumptionInput): void {
+  if (input.kind === "settings") {
+    if (!["inflation_pct", "start_age", "end_age"].includes(input.field)) {
+      throw new Error('field must be one of inflation_pct/start_age/end_age when kind is "settings"');
     }
-  });
+    if (
+      input.field === "inflation_pct" &&
+      (input.value < INFLATION_PCT_RANGE.min || input.value > INFLATION_PCT_RANGE.max)
+    ) {
+      throw new Error(
+        `inflation_pct must be between ${INFLATION_PCT_RANGE.min} and ${INFLATION_PCT_RANGE.max}`
+      );
+    }
+    if (input.field === "start_age" && (input.value < 18 || input.value > 100)) {
+      throw new Error("start_age must be between 18 and 100");
+    }
+    if (input.field === "end_age" && (input.value < 18 || input.value > 120)) {
+      throw new Error("end_age must be between 18 and 120");
+    }
+    return;
+  }
+
+  if (!["corpus_lakhs", "return_pct"].includes(input.field)) {
+    throw new Error('field must be one of corpus_lakhs/return_pct when kind is "bucket"');
+  }
+  if (!input.bucket_name) {
+    throw new Error('bucket_name is required when kind is "bucket"');
+  }
+  if (
+    input.field === "return_pct" &&
+    (input.value < BUCKET_RETURN_PCT_RANGE.min || input.value > BUCKET_RETURN_PCT_RANGE.max)
+  ) {
+    throw new Error(
+      `return_pct must be between ${BUCKET_RETURN_PCT_RANGE.min} and ${BUCKET_RETURN_PCT_RANGE.max}`
+    );
+  }
+  if (input.field === "corpus_lakhs" && (input.value < 0 || input.value > BUCKET_CORPUS_CAP_LAKHS)) {
+    throw new Error(`corpus_lakhs must be between 0 and ${BUCKET_CORPUS_CAP_LAKHS}`);
+  }
+}
 
 const proposeUpdateAssumptionTool = {
   name: "propose_update_assumption",
@@ -409,7 +420,8 @@ const proposeUpdateAssumptionTool = {
     "PROPOSE: stages an app_settings field (inflation_pct/start_age/end_age) or a bucket's corpus_lakhs/return_pct change for human approval -- does NOT write anything. Returns pending_action_id plus the before/after projection impact (depletion_age, end_corpus_lakhs); relay both to the user and tell them it needs approval before it takes effect. Guardrails: inflation_pct 2-12, bucket return_pct -5 to 30, bucket corpus_lakhs 0-100000 lakhs -- out-of-range values are rejected before a proposal is even created.",
   kind: "propose",
   inputSchema: proposeUpdateAssumptionInput,
-  handler: async (input: z.infer<typeof proposeUpdateAssumptionInput>) => {
+  handler: async (input: ProposeUpdateAssumptionInput) => {
+    validateProposeUpdateAssumption(input);
     const { before, after } = await computeAssumptionImpact(input);
     const pending_action_id = await insertPendingAction({
       toolName: "propose_update_assumption",
