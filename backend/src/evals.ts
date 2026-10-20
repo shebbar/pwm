@@ -89,9 +89,16 @@ async function main(): Promise<void> {
   );
 
   // Regression: "Rs 1 lakh/month" got translated to monthly_amount_lakhs: 0.1
-  // (a 10x unit error) instead of 1, since the app's amounts are already in lakhs.
+  // (a 10x unit error) instead of 1, since the app's amounts are already in
+  // lakhs and the model had to convert rupees -> lakhs in its head. Fixed
+  // structurally (not just by prompt tuning) by renaming the field to
+  // monthly_amount_rupees -- the model now states the amount in the same
+  // unit the user said it in, and the handler does the one division in
+  // code. This case stays to catch the model getting the rupee amount
+  // itself wrong (e.g. writing 10000 instead of 100000), a different and
+  // much less likely failure than the old lakhs-conversion one.
   await evalCase(
-    "SWP monthly amount uses the correct scale (lakhs, not rupees/10)",
+    "SWP monthly amount is stated in plain rupees, not converted to lakhs",
     `Ignore my saved SWP plan. If I withdraw a flat Rs 1 lakh per month from age ${start_age} to 90, at what age does my corpus run out?`,
     (toolCalls) => {
       const calls = findCalls(toolCalls, "run_projection");
@@ -103,13 +110,13 @@ async function main(): Promise<void> {
         return { pass: false, detail: "never called run_projection with swp_override" };
       }
       const input = withOverride.input as {
-        assumptions: { swp_override: { monthly_amount_lakhs: number }[] };
+        assumptions: { swp_override: { monthly_amount_rupees: number }[] };
       };
-      const amounts = input.assumptions.swp_override.map((p) => p.monthly_amount_lakhs);
-      const badScale = amounts.some((a) => a < 0.5 || a > 2);
+      const amounts = input.assumptions.swp_override.map((p) => p.monthly_amount_rupees);
+      const badScale = amounts.some((a) => a < 50_000 || a > 200_000);
       return {
         pass: !badScale,
-        detail: `swp_override monthly amounts: ${JSON.stringify(amounts)} (expected ~1)`,
+        detail: `swp_override monthly amounts (rupees): ${JSON.stringify(amounts)} (expected ~100000)`,
       };
     }
   );
