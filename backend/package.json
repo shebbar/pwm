@@ -12,7 +12,8 @@
     "tools:smoke": "tsx src/tools.smoke.ts",
     "evals": "tsx src/evals.ts",
     "mcp": "tsx src/mcp-server.ts",
-    "mcp:start": "node dist/mcp-server.js"
+    "mcp:start": "node dist/mcp-server.js",
+    "mcp:smoke": "tsx src/mcp-server.smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
