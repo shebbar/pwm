@@ -36,11 +36,15 @@ async function main(): Promise<void> {
       [5, 55, 90]
     );
 
+    // Two buckets each for equity and debt -- deliberately, so evals that
+    // check "did every bucket of this asset_class get touched" (not just
+    // the first/only one) are actually exercised on a fresh clone.
     await client.query(
       `INSERT INTO investment_buckets (name, corpus_lakhs, return_pct, asset_class) VALUES
          ('Growth Equity', 150, 12, 'equity'),
          ('Horizon MF', 60, 11, 'equity'),
          ('Core Debt', 80, 7, 'debt'),
+         ('Bond Ladder', 40, 6, 'debt'),
          ('Cash Buffer', 20, 4, 'cash')`
     );
 
@@ -76,7 +80,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    "Seeded demo portfolio: 4 buckets (2 equity, 1 debt, 1 cash), a lump sum inflow/outgo, and an SWP plan, ages 55-90."
+    "Seeded demo portfolio: 5 buckets (2 equity, 2 debt, 1 cash), a lump sum inflow/outgo, and an SWP plan, ages 55-90."
   );
   await pool.end();
 }

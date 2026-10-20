@@ -47,6 +47,9 @@ async function main(): Promise<void> {
   const equityBucketNames = buckets
     .filter((b) => b.asset_class === "equity")
     .map((b) => b.name);
+  const debtBucketNames = buckets
+    .filter((b) => b.asset_class === "debt")
+    .map((b) => b.name);
   const { start_age } = portfolio.settings;
 
   const results: EvalResult[] = [];
@@ -164,6 +167,41 @@ async function main(): Promise<void> {
           : `no run_projection call used inflation_pct: 7 (calls: ${JSON.stringify(
               calls.map((c) => c.input)
             )})`,
+      };
+    }
+  );
+
+  // Regression: asked to set two debt buckets to an explicit 5%, one
+  // proposal came back as 4.2% (6% * 0.7 -- a post-tax adjustment the
+  // model invented on its own, matching a calculation it had made in an
+  // unrelated earlier session) while the other correctly used 5%. The
+  // guardrail (-5 to 30) didn't catch it since 4.2 is a perfectly sane
+  // return_pct on its own -- this is an instruction-fidelity bug, not a
+  // guardrail-catchable one. Re-running the identical prompt produced the
+  // correct value both times, consistent with multi-tool-call sampling
+  // variance rather than a deterministic bug.
+  await evalCase(
+    "explicit numeric value used exactly across every bucket proposal in a turn",
+    "Can you propose lowering the return rate on both of my debt buckets to exactly 5%?",
+    (toolCalls) => {
+      const calls = findCalls(toolCalls, "propose_update_assumption").filter((c) => {
+        const input = c.input as { kind?: string; field?: string };
+        return input.kind === "bucket" && input.field === "return_pct";
+      });
+      const proposedByBucket = new Map(
+        calls.map((c) => {
+          const input = c.input as { bucket_name: string; value: number };
+          return [input.bucket_name, input.value] as const;
+        })
+      );
+      const missing = debtBucketNames.filter((n) => !proposedByBucket.has(n));
+      const wrongValue = [...proposedByBucket.entries()].filter(([, v]) => v !== 5);
+      const pass = missing.length === 0 && wrongValue.length === 0;
+      return {
+        pass,
+        detail: pass
+          ? `all debt buckets proposed at exactly 5%: ${debtBucketNames.join(", ")}`
+          : `missing proposals: ${JSON.stringify(missing)}, wrong values: ${JSON.stringify(wrongValue)}`,
       };
     }
   );

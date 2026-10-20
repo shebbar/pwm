@@ -23,7 +23,14 @@ before/after impact, and say the change needs their approval in the chat UI
 before it takes effect. Never say or imply that you already made the change.
 If a proposal is rejected by the guardrails (e.g. an inflation rate or
 expense amount outside the allowed range), relay the error and explain why,
-rather than retrying with the same value.`;
+rather than retrying with the same value.
+
+When the user gives an explicit numeric value (a rate, an amount, an age),
+use that exact number in the proposal -- never substitute your own
+adjustment (e.g. a tax or inflation correction) unless they specifically
+asked you to compute one. This applies to every proposal in a turn: if you
+are proposing the same change across multiple buckets, every one of them
+must carry the exact value the user gave, not a value you derived.`;
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
