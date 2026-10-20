@@ -120,14 +120,25 @@ async function main(): Promise<void> {
   await evalCase(
     "equity-return change covers every equity-class bucket (by asset_class, not name)",
     "What if I increase all my equity fund returns to 12%?",
-    (toolCalls) => {
+    (toolCalls, reply) => {
       const calls = findCalls(toolCalls, "run_projection");
       const withOverride = calls.find((c) => {
         const input = c.input as { assumptions?: { bucket_overrides?: unknown[] } };
         return (input.assumptions?.bucket_overrides?.length ?? 0) > 0;
       });
       if (!withOverride) {
-        return { pass: false, detail: "never called run_projection with bucket_overrides" };
+        // "What if" is a hypothetical -- it should never reach a propose_*
+        // tool at all, only run_projection. If it did reach propose_*, the
+        // model mistook a speculative question for an actual change
+        // request, which is a different failure than "forgot a bucket".
+        // Print what actually happened rather than guess.
+        return {
+          pass: false,
+          detail:
+            `never called run_projection with bucket_overrides\n` +
+            `      tool calls made: ${JSON.stringify(toolCalls.map((c) => c.name))}\n` +
+            `      reply: ${JSON.stringify(reply)}`,
+        };
       }
       const input = withOverride.input as {
         assumptions: { bucket_overrides: { name: string; return_pct?: number }[] };
