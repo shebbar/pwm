@@ -52,8 +52,8 @@ async function main() {
     await call("run_projection", {
       assumptions: {
         swp_override: [
-          { start_age, end_age: start_age + 19, monthly_amount_rupees: 100_000 },
-          { start_age: start_age + 20, end_age: 90, monthly_amount_rupees: 300_000 },
+          { start_age, end_age: start_age + 19, monthly_amount_lakhs: 1 },
+          { start_age: start_age + 20, end_age: 90, monthly_amount_lakhs: 3 },
         ],
       },
     })

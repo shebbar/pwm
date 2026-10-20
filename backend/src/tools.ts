@@ -124,20 +124,14 @@ const swpOverrideEntrySchema = z
   .object({
     start_age: z.number().int().min(0).max(120),
     end_age: z.number().int().min(0).max(120),
-    // Plain rupees, NOT this app's internal lakhs scale -- deliberately, so
-    // the model never has to convert a user's "Rs 1 lakh/month" into a
-    // lakhs-denominated number itself. That conversion is arithmetic
-    // ("the LLM never does the math"), and asking the model to do it
-    // in its head was a real, recurring eval failure (monthly_amount_lakhs
-    // coming back as 0.1 instead of 1). The handler below does the one
-    // division, in code, every time.
-    monthly_amount_rupees: z
+    monthly_amount_lakhs: z
       .number()
       .finite()
       .nonnegative()
       .describe(
-        "Monthly withdrawal in plain INR rupees -- e.g. Rs 1,00,000/month = 100000, " +
-          "Rs 50,000/month = 50000. Do not convert this to lakhs yourself."
+        "Already in lakhs, same scale as every other amount in this app -- " +
+          "e.g. Rs 1,00,000/month = 1, Rs 2,00,000/month = 2, Rs 50,000/month = 0.5. " +
+          "Do not apply any further conversion."
       ),
   })
   .refine((p) => p.start_age <= p.end_age, {
@@ -213,7 +207,7 @@ const runProjectionTool = {
       ? assumptions.swp_override.map((p) => ({
           start_age: p.start_age,
           end_age: p.end_age,
-          monthly_amount_lakhs: String(p.monthly_amount_rupees / 100_000),
+          monthly_amount_lakhs: String(p.monthly_amount_lakhs),
         }))
       : swp;
 
