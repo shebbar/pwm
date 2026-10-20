@@ -14,9 +14,16 @@ export const AGENT_MAX_ITERATIONS = Number(process.env.AGENT_MAX_ITERATIONS ?? 6
 // Per-model max_tokens defaults live in code (llm/anthropic/models.ts,
 // etc.) as tested facts, not env-configurable -- see that file for why.
 
-// No default on purpose -- mcp-server.ts refuses to start without this set,
-// rather than silently running unauthenticated.
-export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN ?? "";
+// Two scoped tokens instead of one shared secret -- whichever token a
+// caller presents IS its scope (no identity/role lookup layer; see the
+// README for why a bearer-capability model is proportionate for a small
+// fixed set of known callers). MCP_READ_TOKEN grants read-only tools;
+// MCP_PROPOSE_TOKEN grants read + propose tools (a strict superset, not a
+// separate disjoint scope). No defaults on purpose -- mcp-server.ts
+// refuses to start unless both are set, rather than silently running with
+// only one scope available.
+export const MCP_READ_TOKEN = process.env.MCP_READ_TOKEN ?? "";
+export const MCP_PROPOSE_TOKEN = process.env.MCP_PROPOSE_TOKEN ?? "";
 
 // Where agent.ts reaches the MCP server as a client. Docker service name,
 // not localhost -- this crosses a container boundary.
@@ -27,9 +34,9 @@ export const PENDING_ACTION_TTL_MINUTES = Number(
   process.env.PENDING_ACTION_TTL_MINUTES ?? 30
 );
 
-// Separate secret from MCP_AUTH_TOKEN on purpose -- this guards a different
-// trust boundary (the chat UI's own approve/reject calls, made from a
-// browser) rather than the MCP server-to-server connection. No default: the
+// Separate secret from the MCP tokens on purpose -- this guards a
+// different trust boundary (the chat UI's own approve/reject calls, made
+// from a browser) rather than an MCP client connection. No default: the
 // approve/reject/list endpoints refuse to work without one set, same
-// philosophy as MCP_AUTH_TOKEN.
+// philosophy as the MCP tokens.
 export const ACTIONS_AUTH_TOKEN = process.env.ACTIONS_AUTH_TOKEN ?? "";

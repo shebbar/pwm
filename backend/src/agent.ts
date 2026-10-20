@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AGENT_MAX_ITERATIONS, MCP_AUTH_TOKEN, MCP_SERVER_URL } from "./config.js";
+import { AGENT_MAX_ITERATIONS, MCP_PROPOSE_TOKEN, MCP_SERVER_URL } from "./config.js";
 import { getActiveProvider } from "./llm/registry.js";
 import type { CompletionRequest, ContentBlock, ConversationMessage } from "./llm/types.js";
 
@@ -61,13 +61,15 @@ export type AgentResult = {
  * Connects to the MCP server as a client. This agent doesn't import
  * tools.ts/data.ts/projection.ts directly -- it only knows how to talk to
  * an LlmProvider and to an MCP server. Which tools exist, what they do, and
- * which ones are read-only are all decided server-side.
+ * which ones are read-only are all decided server-side. Uses the
+ * read+propose-scoped token since this in-app agent (unlike an external
+ * client such as Claude Desktop) is meant to be able to stage proposals.
  */
 async function connectMcpClient(): Promise<Client> {
   const client = new Client({ name: "pwm-agent", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(MCP_SERVER_URL), {
     requestInit: {
-      headers: { Authorization: `Bearer ${MCP_AUTH_TOKEN}` },
+      headers: { Authorization: `Bearer ${MCP_PROPOSE_TOKEN}` },
     },
   });
   await client.connect(transport);
