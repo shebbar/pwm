@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   await evalCase(
     "explicit numeric value used exactly across every bucket proposal in a turn",
     "Can you propose lowering the return rate on both of my debt buckets to exactly 5%?",
-    (toolCalls) => {
+    (toolCalls, reply) => {
       const calls = findCalls(toolCalls, "propose_update_assumption").filter((c) => {
         const input = c.input as { kind?: string; field?: string };
         return input.kind === "bucket" && input.field === "return_pct";
@@ -204,11 +204,24 @@ async function main(): Promise<void> {
       const missing = debtBucketNames.filter((n) => !proposedByBucket.has(n));
       const wrongValue = [...proposedByBucket.entries()].filter(([, v]) => v !== 5);
       const pass = missing.length === 0 && wrongValue.length === 0;
+      if (pass) {
+        return { pass, detail: `all debt buckets proposed at exactly 5%: ${debtBucketNames.join(", ")}` };
+      }
+      // "missing" has two very different causes worth telling apart: the
+      // model called propose_update_assumption for some buckets but not
+      // others (a targeting bug, same family as the equity-bucket case
+      // above), vs. it made zero such calls at all (most likely it asked
+      // a clarifying question instead of acting, despite the prompt
+      // already saying "both" to avoid that) -- which isn't a value-
+      // fidelity bug, it's a single-shot eval hitting a model that wanted
+      // a second turn. Printing the reply and every tool name called
+      // tells you which one happened without needing to re-run.
       return {
         pass,
-        detail: pass
-          ? `all debt buckets proposed at exactly 5%: ${debtBucketNames.join(", ")}`
-          : `missing proposals: ${JSON.stringify(missing)}, wrong values: ${JSON.stringify(wrongValue)}`,
+        detail:
+          `missing proposals: ${JSON.stringify(missing)}, wrong values: ${JSON.stringify(wrongValue)}\n` +
+          `      tool calls made: ${JSON.stringify(toolCalls.map((c) => c.name))}\n` +
+          `      reply: ${JSON.stringify(reply)}`,
       };
     }
   );
