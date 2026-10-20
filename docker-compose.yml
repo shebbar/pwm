@@ -8,8 +8,9 @@
 #   docker compose up --build
 #
 # Browser uses http://localhost:3000 → API http://localhost:4000.
-# MCP server (Streamable HTTP, read-only tools, bearer-token auth) on http://localhost:4100/mcp.
-# Requires MCP_AUTH_TOKEN set in .env (e.g. `openssl rand -hex 32`).
+# MCP server (Streamable HTTP, scoped bearer-token auth) on http://localhost:4100/mcp.
+# Requires MCP_READ_TOKEN and MCP_PROPOSE_TOKEN set in .env (e.g. `openssl rand -hex 32` each).
+# This app's own agent uses MCP_PROPOSE_TOKEN; give external clients (e.g. Claude Desktop) MCP_READ_TOKEN.
 services:
   api:
     build:
@@ -26,11 +27,12 @@ services:
       PORTFOLIO_LLM_API_KEY: ${PORTFOLIO_LLM_API_KEY:-}
       # The chat agent is itself an MCP client now -- it calls tools over
       # the network via the mcp service rather than importing tools.ts
-      # directly, so it needs the same bearer token mcp-server.ts checks.
+      # directly. Uses the propose-scoped token since this app's own
+      # agent (unlike an external client) is meant to stage proposals.
       MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp:4100/mcp}
-      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_PROPOSE_TOKEN: ${MCP_PROPOSE_TOKEN:-}
       # Guards /api/actions/* (approve/reject proposals) -- separate token
-      # from MCP_AUTH_TOKEN since the caller here is the browser, not
+      # from the MCP tokens since the caller here is the browser, not
       # another backend process. Must match frontend's build-time
       # NEXT_PUBLIC_ACTIONS_TOKEN below.
       ACTIONS_AUTH_TOKEN: ${ACTIONS_AUTH_TOKEN:-}
@@ -50,7 +52,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@pgdb:5432/pwm}
       MCP_PORT: "4100"
-      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      # Both scoped tokens live here -- this service is the one that
+      # validates them and decides which tools a given caller can see.
+      MCP_READ_TOKEN: ${MCP_READ_TOKEN:-}
+      MCP_PROPOSE_TOKEN: ${MCP_PROPOSE_TOKEN:-}
     ports:
       # Host-side bound to loopback only -- not reachable from the rest of
       # your LAN, just this machine. Defense in depth alongside the bearer
