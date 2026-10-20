@@ -180,9 +180,18 @@ async function main(): Promise<void> {
   // guardrail-catchable one. Re-running the identical prompt produced the
   // correct value both times, consistent with multi-tool-call sampling
   // variance rather than a deterministic bug.
+  //
+  // Target value is a deliberately odd-looking 4.33%, not a round number
+  // like 5 -- a round target previously collided with the real debt
+  // buckets' actual saved rate (itself a round number, set by an earlier
+  // manual approval), making the model's "nothing to change, it's already
+  // there" response look like a false failure. A rate nobody would
+  // realistically set by hand in the admin screen keeps this eval's
+  // premise (there IS a change to propose) true regardless of prior runs.
+  const TARGET_RETURN_PCT = 4.33;
   await evalCase(
     "explicit numeric value used exactly across every bucket proposal in a turn",
-    "Can you propose lowering the return rate on both of my debt buckets to exactly 5%?",
+    `Can you propose lowering the return rate on both of my debt buckets to exactly ${TARGET_RETURN_PCT}%?`,
     (toolCalls, reply) => {
       const calls = findCalls(toolCalls, "propose_update_assumption").filter((c) => {
         const input = c.input as { kind?: string; field?: string };
@@ -195,10 +204,13 @@ async function main(): Promise<void> {
         })
       );
       const missing = debtBucketNames.filter((n) => !proposedByBucket.has(n));
-      const wrongValue = [...proposedByBucket.entries()].filter(([, v]) => v !== 5);
+      const wrongValue = [...proposedByBucket.entries()].filter(([, v]) => v !== TARGET_RETURN_PCT);
       const pass = missing.length === 0 && wrongValue.length === 0;
       if (pass) {
-        return { pass, detail: `all debt buckets proposed at exactly 5%: ${debtBucketNames.join(", ")}` };
+        return {
+          pass,
+          detail: `all debt buckets proposed at exactly ${TARGET_RETURN_PCT}%: ${debtBucketNames.join(", ")}`,
+        };
       }
       // "missing" has two very different causes worth telling apart: the
       // model called propose_update_assumption for some buckets but not
