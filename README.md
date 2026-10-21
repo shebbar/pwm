@@ -21,6 +21,7 @@ A retirement/net-worth projection app for the owner's own finances (amounts in �
 - [backend/src/llm/](backend/src/llm/) — the model-choice abstraction, one subdirectory per vendor. `types.ts` defines a vendor-agnostic `LlmProvider` interface (canonical message/tool/content types, with an `"opaque"` block type so vendor-specific extras like Anthropic's extended-thinking blocks can round-trip without leaking into the interface); `registry.ts` resolves the active model entirely from the `llm_models` DB table (no env var) and dispatches to a `vendor → factory` map. `llm/anthropic/provider.ts` is the one implementation (two `llm_models` rows use it, deliberately treated as separate vendors); `llm/anthropic/models.ts` holds tested `max_tokens` defaults per model ID **in code, not the DB** — that number is a tested fact (e.g. Sonnet's extended thinking silently exhausted a too-small budget during development), not something a catalog entry should let someone guess at. A real second vendor (OpenAI, etc.) means one new `llm/<vendor>/` directory and one registry entry — `agent.ts` doesn't change either way.
 - `llm_models` table + `GET/POST /api/llm-models`, `PUT /api/llm-models/:id/activate`, `DELETE /api/llm-models/:id` — the catalog of available models and which one is active, editable live (admin screen has a dropdown + add/remove list) with zero redeploy, e.g. to fail over during a vendor outage. Adding a model here only wires up routing/labeling; it still needs a tested entry in `llm/anthropic/models.ts` before it's safe to activate (activating one without that entry fails loudly, not silently).
 - `agent_runs` table — one row per chat request: which provider actually served it (dynamic, not a fixed config value), full tool-call trace, token usage, success/error. The audit log used throughout development to diagnose agent behavior.
+- [backend/src/evals/](backend/src/evals/) — the eval suite's cases (`cases.ts`), orchestration (`runner.ts`), and markdown/JSON report writer (`report.ts`); [backend/src/evals.ts](backend/src/evals.ts) is the thin CLI entrypoint. 11 cases across 7 categories (data lookup, what-if, unit/scale, multi-step, out-of-scope refusal, proposal tools, guardrail violations) run against the real agent loop (real API calls, real credits). `--models <ids>` compares multiple catalog entries in one run, switching the active model and restoring whatever was active before, even if a run throws; `--runs N` (default 3) repeats each case to measure consistency rather than a single pass/fail; `--category <name>` scopes a run to one category; `--dry-run` lists cases with no API calls. One case (the hypothetical-inflation one) also checks the reply's prose against the engine's own `run_projection` output within a stated tolerance — "answer correctness", not just tool-usage, but via simple number-extraction rather than a second LLM-judge call (cost and determinism). `llm/anthropic/pricing.ts` holds tested USD-per-token rates (same "fact in code" pattern as `models.ts`'s `max_tokens`) so the report's per-model cost column isn't guessed; a model from a vendor without a pricing entry reports cost as `null`, not a fabricated number.
 
 ## Project structure
 
@@ -38,13 +39,19 @@ backend/
       anthropic/                   one subdir per vendor
         provider.ts                   LlmProvider impl
         models.ts                     tested max_tokens defaults (code, not DB)
+        pricing.ts                     tested USD/token rates (code, not DB)
     mcp-server.ts                  MCP server over Streamable HTTP (external clients)
     mcp-server.smoke.ts              scope-enforcement test (npm run mcp:smoke)
     auth.ts                          shared bearer-token comparison (MCP + /api/actions)
     config.ts                         env-driven config (iteration cap, secrets)
     migrations/                    numbered SQL migrations, re-run idempotently on boot
     tools.smoke.ts                   manual smoke test for the tool layer
-    evals.ts                           golden-question regression suite for the agent
+    evals.ts                           eval suite CLI entrypoint (npm run evals)
+    evals/
+      cases.ts                        the 11 golden-question cases
+      runner.ts                        multi-model x N-runs orchestration
+      report.ts                        markdown/JSON report writer
+      results/                          gitignored, timestamped run output
     seed-demo.ts                       loads a fictional portfolio (npm run seed:demo)
 frontend/
   app/
@@ -97,13 +104,15 @@ cd backend && npm run migrate       # apply migrations without starting the serv
 cd backend && npm run seed:demo     # wipe the portfolio tables and load a fictional demo portfolio
 cd backend && npm run tools:smoke   # exercise every agent tool against live data (read tools + a safe write round-trip)
 cd backend && npm run evals         # golden-question regression suite against the real Claude API (costs credits)
+cd backend && npm run evals -- --models claude-haiku,claude-sonnet --runs 3   # compare models, N runs each (costs credits x cases x runs x models)
+cd backend && npm run evals -- --dry-run    # list cases, no API calls
 cd backend && npm run mcp           # run the MCP server standalone, outside Docker (dev mode)
 cd backend && npm run mcp:smoke     # assert scope enforcement against a running MCP server (exits non-zero on failure)
 ```
 
 ## Status
 
-Working: projection engine, admin screen, dashboard, a what-if chat agent (read + propose tools via an MCP client connection, audit-logged, SSE-streamed), human-in-the-loop approvals (the agent proposes changes with a before/after projection impact; nothing writes until `/api/actions/:id/approve`, with server-side guardrails on proposed values and idempotent approve/reject), an eval suite (golden questions tied to real regressions, run manually against the live API), an MCP server over Streamable HTTP with scoped bearer tokens (`read` vs `read+propose`, server-side enforced and tested via `npm run mcp:smoke`) that both the in-app agent and external clients (Claude Desktop) call into, a model-choice abstraction (`llm/`) with a DB-driven catalog of available models, editable from the admin screen with zero redeploy to switch, and a demo seed (`npm run seed:demo`) so a fresh clone has a fictional portfolio to run the app/evals against without any real financial data in the repo. Not yet built: a real second LLM vendor (the abstraction currently has two configs of the same vendor, deliberately treated as separate ones to prove the interface), scheduled/unattended agents, and multi-agent patterns (e.g. an assumption critic that verifies the first agent's claims).
+Working: projection engine, admin screen, dashboard, a what-if chat agent (read + propose tools via an MCP client connection, audit-logged, SSE-streamed), human-in-the-loop approvals (the agent proposes changes with a before/after projection impact; nothing writes until `/api/actions/:id/approve`, with server-side guardrails on proposed values and idempotent approve/reject), an MCP server over Streamable HTTP with scoped bearer tokens (`read` vs `read+propose`, server-side enforced and tested via `npm run mcp:smoke`) that both the in-app agent and external clients (Claude Desktop) call into, a model-choice abstraction (`llm/`) with a DB-driven catalog of available models, editable from the admin screen with zero redeploy to switch, a demo seed (`npm run seed:demo`) so a fresh clone has a fictional portfolio to run the app/evals against without any real financial data in the repo, and an eval suite (11 cases across 7 categories tied to real regressions and real risks, run manually against the live API) that can compare multiple models side by side in one command, each case repeated N times for a consistency measure, producing a markdown + JSON report with pass rate, token usage, cost, and latency per model. Not yet built: a real second LLM vendor (the abstraction currently has two configs of the same vendor, deliberately treated as separate ones to prove the interface), scheduled/unattended agents, and multi-agent patterns (e.g. an assumption critic that verifies the first agent's claims).
 
 ## License
 
