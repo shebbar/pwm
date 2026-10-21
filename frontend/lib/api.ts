@@ -117,6 +117,9 @@ export type ChatUsage = {
   inputTokens: number;
   outputTokens: number;
   model: string;
+  /** The agent_runs row id this turn was logged as -- lets the UI request
+   *  a second opinion scoped to this specific turn. */
+  runId: number;
 };
 
 export type ToolEvent = {
@@ -191,6 +194,10 @@ export type LlmModel = {
   vendor: string;
   model_id: string;
   is_active: boolean;
+  /** Which model runCritic (the "second opinion" agent) uses -- a separate
+   *  choice from is_active, never allowed to match it unless it's the only
+   *  model in the catalog (enforced server-side). */
+  is_critic: boolean;
 };
 
 export type ImpactSummary = { depletion_age: number | null; end_corpus_lakhs: number };
@@ -300,6 +307,19 @@ export async function activateLlmModel(id: string): Promise<void> {
   }
 }
 
+export async function activateCriticLlmModel(id: string): Promise<void> {
+  const res = await fetch(
+    `${apiBase()}/api/llm-models/${encodeURIComponent(id)}/activate-critic`,
+    { method: "PUT" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Set critic model failed (${res.status})`
+    );
+  }
+}
+
 export async function removeLlmModel(id: string): Promise<void> {
   const res = await fetch(`${apiBase()}/api/llm-models/${encodeURIComponent(id)}`, {
     method: "DELETE",
@@ -344,6 +364,10 @@ export type AgentRunSummary = {
   retry_count: number;
   stop_reason: AgentRunStopReason | null;
   cost_usd: string | null;
+  /** 'chat' for ordinary turns, 'critique' for a second opinion on another
+   *  run (see parent_run_id). */
+  kind: "chat" | "critique";
+  parent_run_id: number | null;
 };
 
 export type ToolCallEntry = {
@@ -399,15 +423,33 @@ export async function fetchAgentRuns(
   return res.json();
 }
 
-export async function fetchAgentRun(id: number): Promise<AgentRunDetail> {
+export async function fetchAgentRun(
+  id: number
+): Promise<{ run: AgentRunDetail; critiques: AgentRunSummary[] }> {
   const res = await fetch(`${apiBase()}/api/agent-runs/${id}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`API error ${res.status}`);
-  const data = (await res.json()) as { run: AgentRunDetail };
-  return data.run;
+  return res.json();
 }
 
 export async function fetchAgentRunStats(): Promise<AgentRunStats> {
   const res = await fetch(`${apiBase()}/api/agent-runs/stats`, { cache: "no-store" });
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
+}
+
+/** Triggered only by the "Get a second opinion" button in the chat UI.
+ *  Returns the new critique run (its `reply` is the critique text itself,
+ *  ready to render as its own card). */
+export async function fetchSecondOpinion(runId: number): Promise<AgentRunDetail> {
+  const res = await fetch(`${apiBase()}/api/agent-runs/${runId}/second-opinion`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.error === "string" ? err.error : `Second opinion failed (${res.status})`
+    );
+  }
+  const data = (await res.json()) as { run: AgentRunDetail };
+  return data.run;
 }

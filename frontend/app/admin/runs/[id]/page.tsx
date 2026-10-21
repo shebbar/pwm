@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { fetchAgentRun, type LlmCallEntry, type ToolCallEntry } from "@/lib/api";
+import { fetchAgentRun, type AgentRunSummary, type LlmCallEntry, type ToolCallEntry } from "@/lib/api";
 
 type Step =
   | { kind: "llm_call"; sequence: number; data: LlmCallEntry }
@@ -19,10 +19,13 @@ export default async function AgentRunDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  let run = null as Awaited<ReturnType<typeof fetchAgentRun>> | null;
+  let run: Awaited<ReturnType<typeof fetchAgentRun>>["run"] | null = null;
+  let critiques: AgentRunSummary[] = [];
   let error: string | null = null;
   try {
-    run = await fetchAgentRun(Number(id));
+    const data = await fetchAgentRun(Number(id));
+    run = data.run;
+    critiques = data.critiques;
   } catch (e) {
     error = e instanceof Error ? e.message : "Could not load this run";
   }
@@ -45,9 +48,19 @@ export default async function AgentRunDetailPage({
       <Link href="/admin/runs" className="text-sm text-zinc-600 underline dark:text-zinc-400">
         ← Back to runs
       </Link>
-      <h1 className="mt-4 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">Run #{run.id}</h1>
+      <h1 className="mt-4 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
+        Run #{run.id} {run.kind === "critique" && <span className="text-sky-600 dark:text-sky-400">(second opinion)</span>}
+      </h1>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         {new Date(run.created_at).toLocaleString()} -- {run.model}
+        {run.parent_run_id !== null && (
+          <>
+            {" -- "}
+            <Link href={`/admin/runs/${run.parent_run_id}`} className="underline hover:text-zinc-900 dark:hover:text-zinc-100">
+              reviews run #{run.parent_run_id}
+            </Link>
+          </>
+        )}
       </p>
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -95,6 +108,24 @@ export default async function AgentRunDetailPage({
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
           <p className="text-xs font-medium text-red-700 dark:text-red-300">Error</p>
           <p className="mt-1 whitespace-pre-wrap text-sm text-red-800 dark:text-red-200">{run.error}</p>
+        </div>
+      )}
+
+      {critiques.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Second opinions</h2>
+          <ul className="mt-3 space-y-2">
+            {critiques.map((c) => (
+              <li key={c.id}>
+                <Link
+                  href={`/admin/runs/${c.id}`}
+                  className="block rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900 hover:bg-sky-100 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-100 dark:hover:bg-sky-950/70"
+                >
+                  {new Date(c.created_at).toLocaleString()} -- {c.status === "error" ? "failed" : c.stop_reason}
+                </Link>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   approveAction,
   fetchPendingActions,
+  fetchSecondOpinion,
   rejectAction,
   streamChatMessage,
   type ChatMessage,
@@ -11,6 +12,16 @@ import {
 } from "@/lib/api";
 
 const PROPOSE_TOOL_NAMES = ["propose_update_assumption", "propose_add_expense"];
+// A second opinion only makes sense on a turn that actually touched the
+// plan's numbers or proposed a change -- a pure Q&A turn ("what's my
+// inflation assumption?") has nothing for the critic to check or improve on.
+const SECOND_OPINION_ELIGIBLE_TOOLS = ["run_projection", ...PROPOSE_TOOL_NAMES];
+
+type RunMeta = { runId: number; eligible: boolean };
+type CritiqueState =
+  | { status: "loading" }
+  | { status: "done"; reply: string }
+  | { status: "error"; message: string };
 
 function describeProposedInput(toolName: string, input: unknown): string {
   const i = input as Record<string, unknown>;
@@ -80,6 +91,34 @@ function ProposalCard({
   );
 }
 
+// Visually distinct from both the assistant's own bubble and the amber
+// ProposalCard -- this is a second, independent agent's opinion, not the
+// primary agent talking, and not something awaiting approval.
+function CritiqueCard({ state }: { state: CritiqueState }) {
+  if (state.status === "loading") {
+    return (
+      <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">
+        Getting a second opinion…
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+        {state.message}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm dark:border-sky-900 dark:bg-sky-950/40">
+      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+        Second opinion
+      </p>
+      <p className="whitespace-pre-wrap text-sky-900 dark:text-sky-100">{state.reply}</p>
+    </div>
+  );
+}
+
 export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -88,6 +127,11 @@ export default function ChatPanel() {
   const [toolActivity, setToolActivity] = useState<string[]>([]);
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [busyActionId, setBusyActionId] = useState<number | null>(null);
+  // Keyed by index into `messages` (always an assistant message's index) --
+  // runId comes from the chat stream's `done` event, eligible is set once
+  // we know whether that turn touched run_projection/propose_*.
+  const [runMeta, setRunMeta] = useState<Record<number, RunMeta>>({});
+  const [critiques, setCritiques] = useState<Record<number, CritiqueState>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
   function refreshPendingActions() {
@@ -135,14 +179,17 @@ export default function ChatPanel() {
     if (!text || loading) return;
 
     const next = [...messages, { role: "user", content: text } as ChatMessage];
+    const assistantIndex = next.length;
     setMessages([...next, { role: "assistant", content: "" }]);
     setInput("");
     setError(null);
     setToolActivity([]);
     setLoading(true);
 
+    let eligibleForSecondOpinion = false;
+
     try {
-      await streamChatMessage(
+      const usage = await streamChatMessage(
         text,
         next,
         (delta) => {
@@ -164,16 +211,42 @@ export default function ChatPanel() {
             copy[idx] = `Called ${toolEvent.name}`;
             return copy;
           });
+          if (toolEvent.phase === "call" && SECOND_OPINION_ELIGIBLE_TOOLS.includes(toolEvent.name)) {
+            eligibleForSecondOpinion = true;
+          }
           if (toolEvent.phase === "result" && PROPOSE_TOOL_NAMES.includes(toolEvent.name)) {
             refreshPendingActions();
           }
         }
       );
+      setRunMeta((m) => ({
+        ...m,
+        [assistantIndex]: { runId: usage.runId, eligible: eligibleForSecondOpinion },
+      }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Chat request failed");
       setMessages((m) => m.slice(0, -1));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSecondOpinion(messageIndex: number, runId: number) {
+    setCritiques((c) => ({ ...c, [messageIndex]: { status: "loading" } }));
+    try {
+      const run = await fetchSecondOpinion(runId);
+      setCritiques((c) => ({
+        ...c,
+        [messageIndex]: { status: "done", reply: run.reply ?? "(no reply)" },
+      }));
+    } catch (e) {
+      setCritiques((c) => ({
+        ...c,
+        [messageIndex]: {
+          status: "error",
+          message: e instanceof Error ? e.message : "Second opinion failed",
+        },
+      }));
     }
   }
 
@@ -204,22 +277,43 @@ export default function ChatPanel() {
             No messages yet.
           </p>
         )}
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                m.role === "user"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
-              }`}
-            >
-              {m.content || (loading && i === messages.length - 1 ? "…" : "")}
+        {messages.map((m, i) => {
+          const meta = runMeta[i];
+          const critique = critiques[i];
+          return (
+            <div key={i} className="space-y-1.5">
+              <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                    m.role === "user"
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "bg-zinc-100 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+                  }`}
+                >
+                  {m.content || (loading && i === messages.length - 1 ? "…" : "")}
+                </div>
+              </div>
+              {meta?.eligible && !critique && (
+                <div className="flex justify-start">
+                  <button
+                    type="button"
+                    onClick={() => handleSecondOpinion(i, meta.runId)}
+                    className="rounded-md border border-sky-300 px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 dark:border-sky-700 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                  >
+                    Get a second opinion
+                  </button>
+                </div>
+              )}
+              {critique && (
+                <div className="flex justify-start">
+                  <div className="max-w-[80%] w-full">
+                    <CritiqueCard state={critique} />
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         {toolActivity.length > 0 && (
           <div className="space-y-0.5 text-xs text-zinc-400 dark:text-zinc-500">
             {toolActivity.map((line, i) => (

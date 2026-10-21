@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  activateCriticLlmModel,
   activateLlmModel,
   addLlmModel,
   fetchFullState,
@@ -83,6 +84,7 @@ export function AdminForm() {
   const [llmModelsLoading, setLlmModelsLoading] = useState(true);
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [activatingCriticId, setActivatingCriticId] = useState<string | null>(null);
   const [addingModel, setAddingModel] = useState(false);
   const [newModelId, setNewModelId] = useState("");
   const [newModelLabel, setNewModelLabel] = useState("");
@@ -149,6 +151,19 @@ export function AdminForm() {
       setLlmModelsError(e instanceof Error ? e.message : "Activate failed");
     } finally {
       setActivatingId(null);
+    }
+  };
+
+  const handleActivateCriticModel = async (id: string) => {
+    setActivatingCriticId(id);
+    setLlmModelsError(null);
+    try {
+      await activateCriticLlmModel(id);
+      await loadLlmModels();
+    } catch (e) {
+      setLlmModelsError(e instanceof Error ? e.message : "Set critic model failed");
+    } finally {
+      setActivatingCriticId(null);
     }
   };
 
@@ -949,6 +964,45 @@ export function AdminForm() {
             </select>
           </label>
 
+          {(() => {
+            const active = llmModels.find((m) => m.is_active);
+            const otherModels = llmModels.filter((m) => m.id !== active?.id);
+            if (otherModels.length === 0) {
+              return (
+                <p className="mt-4 max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
+                  <span className="font-medium uppercase tracking-wide">Critic model:</span>{" "}
+                  sharing the primary model -- add another model above to give the critic a
+                  dedicated one.
+                </p>
+              );
+            }
+            const explicitCritic = otherModels.find((m) => m.is_critic);
+            const criticValue = explicitCritic?.id ?? otherModels[0]?.id ?? "";
+            return (
+              <label className="mt-4 block max-w-sm">
+                <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Critic model
+                </span>
+                <select
+                  className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  value={criticValue}
+                  disabled={activatingCriticId !== null}
+                  onChange={(e) => void handleActivateCriticModel(e.target.value)}
+                >
+                  {otherModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                  Which model answers &quot;Get a second opinion&quot; in chat -- always a
+                  different model than the active one above.
+                </span>
+              </label>
+            );
+          })()}
+
           <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900/50">
@@ -964,6 +1018,9 @@ export function AdminForm() {
                   </th>
                   <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
                     Active
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-zinc-600 dark:text-zinc-400">
+                    Critic
                   </th>
                   <th className="px-3 py-2 text-right font-medium text-zinc-600 dark:text-zinc-400">
                     {/* remove */}
@@ -981,15 +1038,18 @@ export function AdminForm() {
                       {m.model_id}
                     </td>
                     <td className="px-3 py-2">{m.is_active ? "✓" : ""}</td>
+                    <td className="px-3 py-2">{m.is_critic ? "✓" : ""}</td>
                     <td className="px-3 py-2 text-right">
                       <button
                         type="button"
                         onClick={() => void handleRemoveModel(m.id)}
-                        disabled={m.is_active}
+                        disabled={m.is_active || m.is_critic}
                         title={
                           m.is_active
                             ? "Activate a different model first"
-                            : "Remove"
+                            : m.is_critic
+                              ? "Set a different critic model first"
+                              : "Remove"
                         }
                         className="rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:text-red-400 dark:hover:bg-red-950/50"
                         aria-label="Remove model"
