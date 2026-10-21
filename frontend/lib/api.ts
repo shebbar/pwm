@@ -326,3 +326,88 @@ export async function saveSettings(body: SavePayload): Promise<FullState> {
   }
   return res.json();
 }
+
+export type AgentRunStopReason = "answered" | "iteration_cap" | "error" | "awaiting_approval";
+
+export type AgentRunSummary = {
+  id: number;
+  created_at: string;
+  model: string;
+  user_message: string;
+  reply: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  status: string;
+  error: string | null;
+  total_latency_ms: number | null;
+  iteration_count: number | null;
+  retry_count: number;
+  stop_reason: AgentRunStopReason | null;
+  cost_usd: string | null;
+};
+
+export type ToolCallEntry = {
+  name: string;
+  input: unknown;
+  output: unknown;
+  latencyMs: number;
+  sequence: number;
+};
+
+export type LlmCallEntry = {
+  sequence: number;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  stopReason: string | null;
+  retries: number;
+};
+
+export type AgentRunDetail = AgentRunSummary & {
+  tool_calls: ToolCallEntry[];
+  llm_calls: LlmCallEntry[];
+};
+
+export type AgentRunFilters = {
+  status?: string;
+  stopReason?: string;
+  model?: string;
+  fromDate?: string;
+  toDate?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+export type AgentRunStats = {
+  runsPerDay: { day: string; count: number }[];
+  failureRate: number;
+  avgCostUsd: number | null;
+  p95LatencyMs: number | null;
+  topTools: { name: string; count: number }[];
+};
+
+export async function fetchAgentRuns(
+  filters: AgentRunFilters = {}
+): Promise<{ runs: AgentRunSummary[]; total: number }> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  const res = await fetch(`${apiBase()}/api/agent-runs${qs ? `?${qs}` : ""}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAgentRun(id: number): Promise<AgentRunDetail> {
+  const res = await fetch(`${apiBase()}/api/agent-runs/${id}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = (await res.json()) as { run: AgentRunDetail };
+  return data.run;
+}
+
+export async function fetchAgentRunStats(): Promise<AgentRunStats> {
+  const res = await fetch(`${apiBase()}/api/agent-runs/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}

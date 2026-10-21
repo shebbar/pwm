@@ -4,6 +4,7 @@ const links = [
   { href: "/", label: "Dashboard" },
   { href: "/admin", label: "Admin" },
   { href: "/growth", label: "Growth" },
+  { href: "/admin/runs", label: "Agent Runs" },
 ];
 
 export function Nav() {
