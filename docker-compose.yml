@@ -31,6 +31,10 @@ services:
       # agent (unlike an external client) is meant to stage proposals.
       MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp:4100/mcp}
       MCP_PROPOSE_TOKEN: ${MCP_PROPOSE_TOKEN:-}
+      # The critic agent (runCritic, agent.ts) is a second MCP client in
+      # this same process -- it connects with the read-only token since it
+      # has no propose_* tools at all.
+      MCP_READ_TOKEN: ${MCP_READ_TOKEN:-}
       # Guards /api/actions/* (approve/reject proposals) -- separate token
       # from the MCP tokens since the caller here is the browser, not
       # another backend process. Must match frontend's build-time
