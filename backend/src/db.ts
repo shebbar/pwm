@@ -75,6 +75,7 @@ const MIGRATION_FILES = [
   "009_agent_config.sql",
   "010_llm_models.sql",
   "011_pending_actions.sql",
+  "012_agent_runs_observability.sql",
 ];
 
 export async function runMigrations(): Promise<void> {

@@ -51,3 +51,16 @@ export interface LlmProvider {
     onTextDelta: (delta: string) => void
   ): Promise<CompletionResult>;
 }
+
+/** The one vendor-agnostic signal agent.ts needs to decide whether to
+ *  retry a failed streamComplete() call -- without knowing which SDK or
+ *  error class it came from. A provider implementation classifies its own
+ *  vendor's transient errors (rate limits, overloads, timeouts) and
+ *  re-throws them as this; anything else propagates as-is and is treated
+ *  as non-retryable. */
+export class RetryableLlmError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RetryableLlmError";
+  }
+}

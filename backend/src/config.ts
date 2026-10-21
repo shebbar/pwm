@@ -14,6 +14,12 @@ export const AGENT_MAX_ITERATIONS = Number(process.env.AGENT_MAX_ITERATIONS ?? 6
 // Per-model max_tokens defaults live in code (llm/anthropic/models.ts,
 // etc.) as tested facts, not env-configurable -- see that file for why.
 
+// How many times agent.ts retries a single LLM call after a RetryableLlmError
+// (rate limit, overload, connection failure) before giving up. 2 matches
+// what the Anthropic SDK silently defaulted to before providers started
+// disabling their own retrying (maxRetries: 0) in favor of this loggable one.
+export const LLM_MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES ?? 2);
+
 // Two scoped tokens instead of one shared secret -- whichever token a
 // caller presents IS its scope (no identity/role lookup layer; see the
 // README for why a bearer-capability model is proportionate for a small

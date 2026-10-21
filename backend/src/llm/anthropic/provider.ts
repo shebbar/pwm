@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { LLM_API_KEY } from "../../config.js";
-import type {
-  CompletionRequest,
-  CompletionResult,
-  ContentBlock,
-  ConversationMessage,
-  LlmProvider,
+import {
+  RetryableLlmError,
+  type CompletionRequest,
+  type CompletionResult,
+  type ContentBlock,
+  type ConversationMessage,
+  type LlmProvider,
 } from "../types.js";
 import { getMaxTokensForModel } from "./models.js";
 
@@ -46,7 +47,11 @@ function fromAnthropicBlock(b: Anthropic.ContentBlock): ContentBlock {
  *  max_tokens default comes from the tested table in ./models.ts, not from
  *  the caller -- see that file for why. */
 export function createAnthropicProvider(opts: { id: string; model: string }): LlmProvider {
-  const client = new Anthropic({ apiKey: LLM_API_KEY });
+  // maxRetries: 0 -- the SDK retries 429/5xx/connection errors twice by
+  // default, silently. agent.ts owns retry-with-backoff itself (so it can
+  // log how many retries a run actually needed); leaving the SDK's own
+  // retrying on would hide some of that count from it.
+  const client = new Anthropic({ apiKey: LLM_API_KEY, maxRetries: 0 });
   const defaultMaxTokens = getMaxTokensForModel(opts.model);
 
   return {
@@ -56,30 +61,45 @@ export function createAnthropicProvider(opts: { id: string; model: string }): Ll
       request: CompletionRequest,
       onTextDelta: (delta: string) => void
     ): Promise<CompletionResult> {
-      const stream = client.messages.stream({
-        model: opts.model,
-        max_tokens: request.maxTokens,
-        system: request.system,
-        tools: request.tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.inputSchema as unknown as Anthropic.Tool.InputSchema,
-        })),
-        messages: request.messages.map(toAnthropicMessage),
-      });
+      try {
+        const stream = client.messages.stream({
+          model: opts.model,
+          max_tokens: request.maxTokens,
+          system: request.system,
+          tools: request.tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            input_schema: t.inputSchema as unknown as Anthropic.Tool.InputSchema,
+          })),
+          messages: request.messages.map(toAnthropicMessage),
+        });
 
-      stream.on("text", onTextDelta);
+        stream.on("text", onTextDelta);
 
-      const final = await stream.finalMessage();
-      
-      return {
-        content: final.content.map(fromAnthropicBlock),
-        stopReason: final.stop_reason,
-        usage: {
-          inputTokens: final.usage.input_tokens,
-          outputTokens: final.usage.output_tokens,
-        },
-      };
+        const final = await stream.finalMessage();
+
+        return {
+          content: final.content.map(fromAnthropicBlock),
+          stopReason: final.stop_reason,
+          usage: {
+            inputTokens: final.usage.input_tokens,
+            outputTokens: final.usage.output_tokens,
+          },
+        };
+      } catch (err) {
+        // Rate limit, overload/5xx, or a connection failure (including
+        // timeout, a subclass of APIConnectionError) -- transient, worth
+        // retrying. Anything else (bad request, auth, a genuine 4xx)
+        // propagates unchanged; retrying it would just fail the same way.
+        if (
+          err instanceof Anthropic.RateLimitError ||
+          err instanceof Anthropic.InternalServerError ||
+          err instanceof Anthropic.APIConnectionError
+        ) {
+          throw new RetryableLlmError(err.message, { cause: err });
+        }
+        throw err;
+      }
     },
   };
 }
