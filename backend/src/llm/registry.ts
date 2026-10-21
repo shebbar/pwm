@@ -1,5 +1,6 @@
 import { loadActiveLlmModel } from "../data.js";
 import { createAnthropicProvider } from "./anthropic/provider.js";
+import { estimateCostUsd as estimateAnthropicCostUsd } from "./anthropic/pricing.js";
 import type { LlmProvider } from "./types.js";
 
 /**
@@ -34,4 +35,22 @@ export async function getActiveProvider(): Promise<LlmProvider> {
     );
   }
   return factory({ id: model.id, model: model.model_id });
+}
+
+/** Vendor -> pricing-table dispatch, mirroring VENDOR_FACTORIES above.
+ *  Returns null rather than throwing for a vendor with no pricing table
+ *  yet (there's only one today) or a model missing from that vendor's
+ *  table -- an unknown cost should show as "n/a", never a guessed number. */
+export function estimateCostUsd(
+  vendor: string,
+  modelId: string,
+  inputTokens: number,
+  outputTokens: number
+): number | null {
+  if (vendor !== "anthropic") return null;
+  try {
+    return estimateAnthropicCostUsd(modelId, inputTokens, outputTokens);
+  } catch {
+    return null;
+  }
 }

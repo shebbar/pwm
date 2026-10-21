@@ -1,6 +1,6 @@
 import { activateLlmModel, listLlmModels, type LlmModelRow } from "../data.js";
 import { runAgent } from "../agent.js";
-import { estimateCostUsd } from "../llm/anthropic/pricing.js";
+import { estimateCostUsd } from "../llm/registry.js";
 import type { CaseAggregate, EvalCase, EvalCategory, ModelReport } from "./types.js";
 
 export type RunnerOptions = {
@@ -13,19 +13,6 @@ function percentile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) return 0;
   const idx = Math.min(sortedAsc.length - 1, Math.ceil((p / 100) * sortedAsc.length) - 1);
   return sortedAsc[Math.max(0, idx)];
-}
-
-/** Only Anthropic has a pricing table today (see llm/anthropic/pricing.ts).
- *  A model from a vendor without one reports null cost rather than a
- *  guessed number -- Phase 4 is where this grows into a real per-vendor
- *  dispatch, same shape as llm/registry.ts's vendor -> factory map. */
-function estimateCost(vendor: string, vendorModelId: string, inputTokens: number, outputTokens: number): number | null {
-  if (vendor !== "anthropic") return null;
-  try {
-    return estimateCostUsd(vendorModelId, inputTokens, outputTokens);
-  } catch {
-    return null;
-  }
 }
 
 type RunOutcome = {
@@ -83,7 +70,7 @@ async function runForModel(model: LlmModelRow, cases: EvalCase[], runsPerCase: n
       totalInput += outcome.inputTokens;
       totalOutput += outcome.outputTokens;
 
-      const cost = estimateCost(model.vendor, model.model_id, outcome.inputTokens, outcome.outputTokens);
+      const cost = estimateCostUsd(model.vendor, model.model_id, outcome.inputTokens, outcome.outputTokens);
       if (cost === null) costKnown = false;
       else totalCost += cost;
     }

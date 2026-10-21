@@ -372,3 +372,130 @@ export async function rejectPendingAction(
     client.release();
   }
 }
+
+export type AgentRunRow = {
+  id: number;
+  created_at: string;
+  model: string;
+  user_message: string;
+  reply: string | null;
+  tool_calls: unknown;
+  llm_calls: unknown;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  status: string;
+  error: string | null;
+  total_latency_ms: number | null;
+  iteration_count: number | null;
+  retry_count: number;
+  stop_reason: string | null;
+  cost_usd: string | null;
+};
+
+export type AgentRunFilters = {
+  status?: string;
+  stopReason?: string;
+  model?: string;
+  fromDate?: string;
+  toDate?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+/** List view intentionally omits tool_calls/llm_calls -- those can be
+ *  sizeable JSON blobs and the list page doesn't render them; the detail
+ *  endpoint below selects everything for one row. */
+export async function listAgentRuns(
+  filters: AgentRunFilters
+): Promise<{ rows: Omit<AgentRunRow, "tool_calls" | "llm_calls">[]; total: number }> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (filters.status) {
+    params.push(filters.status);
+    conditions.push(`status = $${params.length}`);
+  }
+  if (filters.stopReason) {
+    params.push(filters.stopReason);
+    conditions.push(`stop_reason = $${params.length}`);
+  }
+  if (filters.model) {
+    params.push(filters.model);
+    conditions.push(`model = $${params.length}`);
+  }
+  if (filters.fromDate) {
+    params.push(filters.fromDate);
+    conditions.push(`created_at >= $${params.length}`);
+  }
+  if (filters.toDate) {
+    params.push(filters.toDate);
+    conditions.push(`created_at <= $${params.length}`);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const pageSize = Math.min(Math.max(filters.pageSize ?? 20, 1), 100);
+  const page = Math.max(filters.page ?? 1, 1);
+  const offset = (page - 1) * pageSize;
+
+  const { rows } = await pool.query<Omit<AgentRunRow, "tool_calls" | "llm_calls">>(
+    `SELECT id, created_at, model, user_message, reply, input_tokens, output_tokens, status, error,
+            total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd
+     FROM agent_runs ${where}
+     ORDER BY created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, pageSize, offset]
+  );
+  const { rows: countRows } = await pool.query<{ count: string }>(
+    `SELECT COUNT(*) FROM agent_runs ${where}`,
+    params
+  );
+  return { rows, total: Number(countRows[0].count) };
+}
+
+export async function getAgentRun(id: number): Promise<AgentRunRow | null> {
+  const { rows } = await pool.query<AgentRunRow>(`SELECT * FROM agent_runs WHERE id = $1`, [id]);
+  return rows[0] ?? null;
+}
+
+export type AgentRunStats = {
+  runsPerDay: { day: string; count: number }[];
+  failureRate: number;
+  avgCostUsd: number | null;
+  p95LatencyMs: number | null;
+  topTools: { name: string; count: number }[];
+};
+
+export async function getAgentRunStats(): Promise<AgentRunStats> {
+  const [runsPerDay, failure, avgCost, p95, topTools] = await Promise.all([
+    pool.query<{ day: string; count: string }>(
+      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, COUNT(*) AS count
+       FROM agent_runs
+       WHERE created_at >= NOW() - INTERVAL '14 days'
+       GROUP BY day
+       ORDER BY day DESC`
+    ),
+    pool.query<{ rate: string | null }>(
+      `SELECT (COUNT(*) FILTER (WHERE status = 'error'))::float / NULLIF(COUNT(*), 0) AS rate
+       FROM agent_runs`
+    ),
+    pool.query<{ avg: string | null }>(`SELECT AVG(cost_usd) AS avg FROM agent_runs WHERE cost_usd IS NOT NULL`),
+    pool.query<{ p95: string | null }>(
+      `SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY total_latency_ms) AS p95
+       FROM agent_runs WHERE total_latency_ms IS NOT NULL`
+    ),
+    pool.query<{ name: string; count: string }>(
+      `SELECT elem->>'name' AS name, COUNT(*) AS count
+       FROM agent_runs, jsonb_array_elements(tool_calls) AS elem
+       GROUP BY name
+       ORDER BY count DESC
+       LIMIT 10`
+    ),
+  ]);
+
+  return {
+    runsPerDay: runsPerDay.rows.map((r) => ({ day: r.day, count: Number(r.count) })),
+    failureRate: failure.rows[0]?.rate != null ? Number(failure.rows[0].rate) : 0,
+    avgCostUsd: avgCost.rows[0]?.avg != null ? Number(avgCost.rows[0].avg) : null,
+    p95LatencyMs: p95.rows[0]?.p95 != null ? Number(p95.rows[0].p95) : null,
+    topTools: topTools.rows.map((r) => ({ name: r.name, count: Number(r.count) })),
+  };
+}

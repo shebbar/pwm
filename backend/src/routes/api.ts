@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { runAgent } from "../agent.js";
+import { AgentRunError, runAgent } from "../agent.js";
 import { safeTokenEqual } from "../auth.js";
 import { ACTIONS_AUTH_TOKEN } from "../config.js";
 import {
@@ -9,7 +9,10 @@ import {
   addLlmModel,
   approvePendingAction,
   filterLumps,
+  getAgentRun,
+  getAgentRunStats,
   linkPendingActionsToRun,
+  listAgentRuns,
   listLlmModels,
   listPendingActions,
   loadFlows,
@@ -23,7 +26,7 @@ import {
   type PendingActionStatus,
 } from "../data.js";
 import { pool } from "../db.js";
-import { listVendors } from "../llm/registry.js";
+import { estimateCostUsd, listVendors } from "../llm/registry.js";
 import { buildProjection } from "../projection.js";
 
 const flowSchema = z.object({
@@ -304,9 +307,18 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
       outputTokens: result.outputTokens,
       model: result.provider,
     };
+    const models = await listLlmModels();
+    const modelRow = models.find((m) => m.id === result.provider);
+    const costUsd = modelRow
+      ? estimateCostUsd(modelRow.vendor, modelRow.model_id, result.inputTokens, result.outputTokens)
+      : null;
+
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO agent_runs (model, user_message, reply, tool_calls, input_tokens, output_tokens, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'ok') RETURNING id`,
+      `INSERT INTO agent_runs (
+         model, user_message, reply, tool_calls, input_tokens, output_tokens, status,
+         total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd, llm_calls
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, 'ok', $7, $8, $9, $10, $11, $12) RETURNING id`,
       [
         result.provider,
         message,
@@ -314,6 +326,12 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
         JSON.stringify(result.toolCalls),
         usage.inputTokens,
         usage.outputTokens,
+        result.totalLatencyMs,
+        result.iterationCount,
+        result.retryCount,
+        result.stopReason,
+        costUsd,
+        JSON.stringify(result.llmCalls),
       ]
     );
     // pending_actions rows (if any propose_* tool was called) exist before
@@ -322,14 +340,36 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
     send("done", usage);
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Chat failed";
-    // If this threw before a provider was even resolved (e.g. an unknown
-    // DB-override value), there's no result.provider to log -- 'unknown'
-    // is a placeholder, not a guess at which model almost ran.
-    await pool.query(
-      `INSERT INTO agent_runs (model, user_message, status, error)
-       VALUES ($1, $2, 'error', $3)`,
-      ["unknown", message, errorMessage]
-    );
+    if (e instanceof AgentRunError) {
+      // A provider was already resolved and the run made some real
+      // progress before failing -- log the real trace, not an empty row.
+      await pool.query(
+        `INSERT INTO agent_runs (
+           model, user_message, status, error, tool_calls, llm_calls,
+           total_latency_ms, iteration_count, retry_count, stop_reason
+         )
+         VALUES ($1, $2, 'error', $3, $4, $5, $6, $7, $8, 'error')`,
+        [
+          e.partial.provider,
+          message,
+          errorMessage,
+          JSON.stringify(e.partial.toolCalls),
+          JSON.stringify(e.partial.llmCalls),
+          e.partial.totalLatencyMs,
+          e.partial.iterationCount,
+          e.partial.llmCalls.reduce((sum, c) => sum + c.retries, 0),
+        ]
+      );
+    } else {
+      // Failed before a provider was even resolved (e.g. an unknown DB
+      // override value) or before the loop started -- nothing to attach.
+      // 'unknown' is a placeholder, not a guess at which model almost ran.
+      await pool.query(
+        `INSERT INTO agent_runs (model, user_message, status, error, stop_reason)
+         VALUES ($1, $2, 'error', $3, 'error')`,
+        ["unknown", message, errorMessage]
+      );
+    }
     send("error", { message: errorMessage });
   } finally {
     res.end();
@@ -478,6 +518,61 @@ apiRouter.post("/actions/:id/reject", async (req, res, next) => {
       return;
     }
     res.json({ action: result.row });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Observability: the admin runs page reads these. Unauthenticated, same
+// as /api/settings and /api/llm-models -- this is read-only operational
+// data, not a write-triggering endpoint like /api/actions, so it doesn't
+// need its own bearer token in this single-user app.
+const agentRunFiltersSchema = z.object({
+  status: z.string().optional(),
+  stopReason: z.string().optional(),
+  model: z.string().optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+apiRouter.get("/agent-runs/stats", async (_req, res, next) => {
+  try {
+    const stats = await getAgentRunStats();
+    res.json(stats);
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.get("/agent-runs/:id", async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Invalid run id" });
+    return;
+  }
+  try {
+    const run = await getAgentRun(id);
+    if (!run) {
+      res.status(404).json({ error: "No such agent run" });
+      return;
+    }
+    res.json({ run });
+  } catch (e) {
+    next(e);
+  }
+});
+
+apiRouter.get("/agent-runs", async (req, res, next) => {
+  const parsed = agentRunFiltersSchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const { rows, total } = await listAgentRuns(parsed.data);
+    res.json({ runs: rows, total });
   } catch (e) {
     next(e);
   }
