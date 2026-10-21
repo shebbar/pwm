@@ -140,18 +140,19 @@ export type LlmModelRow = {
   vendor: string;
   model_id: string;
   is_active: boolean;
+  is_critic: boolean;
 };
 
 export async function listLlmModels(): Promise<LlmModelRow[]> {
   const { rows } = await pool.query<LlmModelRow>(
-    `SELECT id, label, vendor, model_id, is_active FROM llm_models ORDER BY created_at`
+    `SELECT id, label, vendor, model_id, is_active, is_critic FROM llm_models ORDER BY created_at`
   );
   return rows;
 }
 
 export async function loadActiveLlmModel(): Promise<LlmModelRow | null> {
   const { rows } = await pool.query<LlmModelRow>(
-    `SELECT id, label, vendor, model_id, is_active FROM llm_models WHERE is_active = true LIMIT 1`
+    `SELECT id, label, vendor, model_id, is_active, is_critic FROM llm_models WHERE is_active = true LIMIT 1`
   );
   return rows[0] ?? null;
 }
@@ -187,14 +188,52 @@ export async function activateLlmModel(id: string): Promise<void> {
   }
 }
 
+/** The critic (runCritic, agent.ts) must use a different model than the
+ *  active (chat) one, unless this is the only model in the catalog --
+ *  enforced here at write time (and again at read time in
+ *  llm/registry.ts's getCriticProvider, in case the active model changes
+ *  later and happens to collide with a previously-set critic pick). */
+export async function activateCriticLlmModel(id: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ is_active: boolean }>(
+      `SELECT is_active FROM llm_models WHERE id = $1`,
+      [id]
+    );
+    if (rows.length === 0) throw new Error(`No LLM model with id "${id}"`);
+    if (rows[0].is_active) {
+      const { rows: countRows } = await client.query<{ count: string }>(
+        `SELECT COUNT(*) FROM llm_models`
+      );
+      if (Number(countRows[0].count) > 1) {
+        throw new Error(
+          "The critic can't use the same model as the chat agent -- pick a different one (or remove the others to share)."
+        );
+      }
+    }
+    await client.query(`UPDATE llm_models SET is_critic = false WHERE is_critic = true`);
+    await client.query(`UPDATE llm_models SET is_critic = true WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function removeLlmModel(id: string): Promise<void> {
-  const { rows } = await pool.query<{ is_active: boolean }>(
-    `SELECT is_active FROM llm_models WHERE id = $1`,
+  const { rows } = await pool.query<{ is_active: boolean; is_critic: boolean }>(
+    `SELECT is_active, is_critic FROM llm_models WHERE id = $1`,
     [id]
   );
   if (rows.length === 0) throw new Error(`No LLM model with id "${id}"`);
   if (rows[0].is_active) {
     throw new Error("Cannot delete the active model -- activate a different one first.");
+  }
+  if (rows[0].is_critic) {
+    throw new Error("Cannot delete the critic model -- choose a different one first.");
   }
   await pool.query(`DELETE FROM llm_models WHERE id = $1`, [id]);
 }
@@ -390,6 +429,12 @@ export type AgentRunRow = {
   retry_count: number;
   stop_reason: string | null;
   cost_usd: string | null;
+  /** 'chat' (the default, ordinary chat turns) or 'critique' (a second
+   *  opinion on another run, see parent_run_id) -- same table, same
+   *  columns, so a critique run gets the admin list/stats/detail pages for
+   *  free instead of needing a parallel schema. */
+  kind: string;
+  parent_run_id: number | null;
 };
 
 export type AgentRunFilters = {
@@ -438,7 +483,7 @@ export async function listAgentRuns(
 
   const { rows } = await pool.query<Omit<AgentRunRow, "tool_calls" | "llm_calls">>(
     `SELECT id, created_at, model, user_message, reply, input_tokens, output_tokens, status, error,
-            total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd
+            total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd, kind, parent_run_id
      FROM agent_runs ${where}
      ORDER BY created_at DESC
      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -454,6 +499,23 @@ export async function listAgentRuns(
 export async function getAgentRun(id: number): Promise<AgentRunRow | null> {
   const { rows } = await pool.query<AgentRunRow>(`SELECT * FROM agent_runs WHERE id = $1`, [id]);
   return rows[0] ?? null;
+}
+
+/** Critique runs (kind='critique') that reviewed this chat run, oldest
+ *  first -- you can ask for a second opinion more than once on the same
+ *  run, so this is a list, not a single optional row. */
+export async function listCritiquesForRun(
+  parentRunId: number
+): Promise<Omit<AgentRunRow, "tool_calls" | "llm_calls">[]> {
+  const { rows } = await pool.query<Omit<AgentRunRow, "tool_calls" | "llm_calls">>(
+    `SELECT id, created_at, model, user_message, reply, input_tokens, output_tokens, status, error,
+            total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd, kind, parent_run_id
+     FROM agent_runs
+     WHERE parent_run_id = $1
+     ORDER BY created_at ASC`,
+    [parentRunId]
+  );
+  return rows;
 }
 
 export type AgentRunStats = {

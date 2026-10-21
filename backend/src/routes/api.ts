@@ -1,10 +1,11 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { AgentRunError, runAgent } from "../agent.js";
+import { AgentRunError, runAgent, runCritic, type ToolCallLog } from "../agent.js";
 import { safeTokenEqual } from "../auth.js";
 import { ACTIONS_AUTH_TOKEN } from "../config.js";
 import {
+  activateCriticLlmModel,
   activateLlmModel,
   addLlmModel,
   approvePendingAction,
@@ -13,6 +14,7 @@ import {
   getAgentRunStats,
   linkPendingActionsToRun,
   listAgentRuns,
+  listCritiquesForRun,
   listLlmModels,
   listPendingActions,
   loadFlows,
@@ -337,7 +339,9 @@ apiRouter.post("/chat", chatLimiter, async (req, res) => {
     // pending_actions rows (if any propose_* tool was called) exist before
     // this agent_runs row does -- link them now that it has an id.
     await linkPendingActionsToRun(rows[0].id, result.proposedActionIds);
-    send("done", usage);
+    // runId lets the chat UI offer a "Get a second opinion" button scoped
+    // to this specific turn (POST /agent-runs/:id/second-opinion below).
+    send("done", { ...usage, runId: rows[0].id });
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Chat failed";
     if (e instanceof AgentRunError) {
@@ -415,6 +419,21 @@ apiRouter.put("/llm-models/:id/activate", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : "Failed to activate model" });
+  }
+});
+
+// Which model runCritic (agent.ts) uses -- deliberately a separate choice
+// from /activate above. activateCriticLlmModel (data.ts) rejects picking
+// the same model as the active one unless it's the only model in the
+// catalog, which is the error path this 400 covers.
+apiRouter.put("/llm-models/:id/activate-critic", async (req, res) => {
+  try {
+    await activateCriticLlmModel(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res
+      .status(400)
+      .json({ error: e instanceof Error ? e.message : "Failed to set critic model" });
   }
 });
 
@@ -558,9 +577,122 @@ apiRouter.get("/agent-runs/:id", async (req, res, next) => {
       res.status(404).json({ error: "No such agent run" });
       return;
     }
-    res.json({ run });
+    // Any second opinions requested on this run (empty for critique runs
+    // themselves, and for chat runs nobody has asked about yet).
+    const critiques = await listCritiquesForRun(id);
+    res.json({ run, critiques });
   } catch (e) {
     next(e);
+  }
+});
+
+// Triggered only by the "Get a second opinion" button in the chat UI --
+// never automatically. Reviews one chat run's output (runCritic, agent.ts):
+// checks its numeric claims against its own trace, and if the projection
+// outlook is pessimistic, explores reallocation options and describes them
+// -- it has no propose_* tools available (read-only MCP token), so it can
+// only suggest, never write. The result is logged as its own agent_runs row
+// (kind='critique', parent_run_id=:id) rather than a parallel table, so it
+// shows up in the admin runs list/stats for free.
+apiRouter.post("/agent-runs/:id/second-opinion", chatLimiter, async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Invalid run id" });
+    return;
+  }
+
+  let parentRun;
+  try {
+    parentRun = await getAgentRun(id);
+  } catch (e) {
+    next(e);
+    return;
+  }
+  if (!parentRun) {
+    res.status(404).json({ error: "No such agent run" });
+    return;
+  }
+  if (parentRun.kind !== "chat") {
+    res.status(400).json({ error: "Second opinions can only be requested on chat runs" });
+    return;
+  }
+
+  const label = `Second opinion for run #${id}`;
+  try {
+    const result = await runCritic(
+      {
+        userMessage: parentRun.user_message,
+        reply: parentRun.reply ?? "",
+        toolCalls: (parentRun.tool_calls as ToolCallLog[] | null) ?? [],
+      },
+      () => {} // synchronous JSON response -- no SSE stream for the critic
+    );
+
+    const models = await listLlmModels();
+    const modelRow = models.find((m) => m.id === result.provider);
+    const costUsd = modelRow
+      ? estimateCostUsd(modelRow.vendor, modelRow.model_id, result.inputTokens, result.outputTokens)
+      : null;
+
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO agent_runs (
+         model, user_message, reply, tool_calls, input_tokens, output_tokens, status,
+         total_latency_ms, iteration_count, retry_count, stop_reason, cost_usd, llm_calls,
+         kind, parent_run_id
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, 'ok', $7, $8, $9, $10, $11, $12, 'critique', $13) RETURNING id`,
+      [
+        result.provider,
+        label,
+        result.reply,
+        JSON.stringify(result.toolCalls),
+        result.inputTokens,
+        result.outputTokens,
+        result.totalLatencyMs,
+        result.iterationCount,
+        result.retryCount,
+        result.stopReason,
+        costUsd,
+        JSON.stringify(result.llmCalls),
+        id,
+      ]
+    );
+    // The critic has no propose_* tools, so this will always be empty
+    // today -- kept for consistency with the /chat insert path in case
+    // that ever changes.
+    await linkPendingActionsToRun(rows[0].id, result.proposedActionIds);
+
+    const run = await getAgentRun(rows[0].id);
+    res.json({ run });
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : "Second opinion failed";
+    if (e instanceof AgentRunError) {
+      await pool.query(
+        `INSERT INTO agent_runs (
+           model, user_message, status, error, tool_calls, llm_calls,
+           total_latency_ms, iteration_count, retry_count, stop_reason, kind, parent_run_id
+         )
+         VALUES ($1, $2, 'error', $3, $4, $5, $6, $7, $8, 'error', 'critique', $9)`,
+        [
+          e.partial.provider,
+          label,
+          errorMessage,
+          JSON.stringify(e.partial.toolCalls),
+          JSON.stringify(e.partial.llmCalls),
+          e.partial.totalLatencyMs,
+          e.partial.iterationCount,
+          e.partial.llmCalls.reduce((sum, c) => sum + c.retries, 0),
+          id,
+        ]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO agent_runs (model, user_message, status, error, stop_reason, kind, parent_run_id)
+         VALUES ($1, $2, 'error', $3, 'error', 'critique', $4)`,
+        ["unknown", label, errorMessage, id]
+      );
+    }
+    res.status(502).json({ error: errorMessage });
   }
 });
 
