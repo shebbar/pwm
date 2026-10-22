@@ -1,6 +1,24 @@
 # PWM — Personal Wealth Management
 
-A retirement/net-worth projection app for the owner's own finances (amounts in ₹ Lakhs). You enter investment buckets, inflation, and planned cash flows; a deterministic engine projects your corpus year by year and tells you whether — and when — it runs out. A chat-based agent sits on top of the same engine so you can ask what-if questions in plain English instead of editing the plan directly.
+A hands-on exploration of production AI agent patterns, built on a real tool: a retirement/net-worth projection app for the owner's own finances. The projection engine itself is unremarkable — deterministic arithmetic over investment buckets, inflation, and planned cash flows. What's underneath is the chat agent sitting on top of it, built and hardened in phases like production infrastructure rather than a weekend demo.
+
+**What this demonstrates:**
+
+- **Human-in-the-loop safety for an agent with write access** — the agent never writes directly; every change is staged as a proposal with a before/after impact snapshot, approved or rejected by a human, idempotently.
+- **Tool use scoped by least privilege, not by trust** — an [MCP server](backend/src/mcp-server.ts) enforces two bearer-token scopes (read-only vs. read+propose) server-side; a caller only ever sees the tools its token grants.
+- **Vendor-agnostic provider abstraction** — swapping LLM vendors or models is a DB row and a tested config entry in [`llm/`](backend/src/llm/), not a code change to the agent loop.
+- **Full observability on every agent run** — cost, latency, retries, token usage, and a merged tool-call/LLM-call timeline, queryable from an [admin dashboard](frontend/app/admin/runs/page.tsx) with filters and aggregate stats.
+- **A second, independent agent reviewing the first one's work** — an opt-in critic checks the primary agent's numeric claims against its own trace and suggests corrections, running on a separately-chosen model so it isn't grading its own homework.
+- **An eval suite run against the real API** — 11 cases across 7 categories, multi-model comparison, each case repeated for a consistency measure — not vibes-based.
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-chat-proposal.png" width="32%" alt="Dashboard with chat and a pending proposal" />
+  <img src="docs/screenshots/admin-runs.png" width="32%" alt="Agent run observability dashboard" />
+  <img src="docs/screenshots/admin-run-detail.png" width="32%" alt="Critic agent's review of another run" />
+</p>
+<p align="center"><em>Left to right: the chat UI with a pending proposal, the observability dashboard, and the critic agent's review of another run — all using the app's built-in fictional demo data (<code>npm run seed:demo</code>), not real financial information.</em></p>
+
+The rest of this README is the detailed engineering reference — how each piece works, the trade-offs behind it, and how to run it yourself.
 
 ## Stack
 
