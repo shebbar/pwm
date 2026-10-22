@@ -11,6 +11,20 @@ A hands-on exploration of production AI agent patterns, built on a real tool: a 
 - **A second, independent agent reviewing the first one's work** — an opt-in critic checks the primary agent's numeric claims against its own trace and suggests corrections, running on a separately-chosen model so it isn't grading its own homework.
 - **An eval suite run against the real API** — 11 cases across 7 categories, multi-model comparison, each case repeated for a consistency measure — not vibes-based.
 
+**Eval results** (a real `npm run evals -- --models claude-haiku,claude-sonnet --runs 3` run against the live API, 66 agent calls total):
+
+| Model | Pass rate | Avg cost/question | p50 latency | p95 latency |
+|---|---|---|---|---|
+| Haiku | 91% | $0.0082 | 3,908ms | 8,289ms |
+| Sonnet | 100% | $0.0296 (3.6x Haiku) | 6,345ms | 11,273ms |
+
+Haiku's misses, across the 33 runs (11 cases × 3 runs each) -- shown with explanations rather than just a number, since a known failure is more credible than an unexplained perfect score:
+- **Unit/scale error**: asked for a flat ₹1 lakh/month SWP withdrawal, computed `0.1` instead of `1` — a 10x scale slip.
+- **Incomplete multi-bucket verification**: asked to raise returns on every equity bucket, found both correctly but never re-ran the projection with both changes combined to verify the net effect before replying.
+- **Horizon override, 1/3 runs**: didn't always pass an extended age-95 horizon through to `run_projection`.
+
+Sonnet passed all 11 cases across all 3 runs. (Three runs per case is a small sample — read this as a real, reproducible snapshot, not a definitive accuracy claim.) Full report with the per-category breakdown: regenerate with `npm run evals -- --models claude-haiku,claude-sonnet --runs 3` (writes to `backend/evals/results/`, gitignored).
+
 <p align="center">
   <img src="docs/screenshots/dashboard-chat-proposal.png" width="32%" alt="Dashboard with chat and a pending proposal" />
   <img src="docs/screenshots/admin-runs.png" width="32%" alt="Agent run observability dashboard" />
