@@ -27,7 +27,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { safeTokenEqual } from "./auth.js";
 import { MCP_PROPOSE_TOKEN, MCP_READ_TOKEN } from "./config.js";
-import { initDatabase } from "./db.js";
+import { connectDatabase } from "./db.js";
 import { tools, type ToolKind } from "./tools.js";
 
 type McpScope = "read" | "read+propose";
@@ -101,7 +101,11 @@ async function main(): Promise<void> {
     );
   }
 
-  await initDatabase();
+  // Connects only -- doesn't create the database or run migrations. The
+  // api service owns schema evolution (see db.ts's connectDatabase); this
+  // server assumes it's already been initialized. Running migrations from
+  // here too was the actual cause of a real startup race -- see db.ts.
+  connectDatabase();
 
   // Binding 0.0.0.0 so other containers on pwm-net can reach it -- this
   // disables the SDK's automatic localhost DNS-rebinding protection (it

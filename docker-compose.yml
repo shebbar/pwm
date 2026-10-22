@@ -42,8 +42,6 @@ services:
       ACTIONS_AUTH_TOKEN: ${ACTIONS_AUTH_TOKEN:-}
     ports:
       - "4000:4000"
-    depends_on:
-      - mcp
     networks:
       - pwm-net
 
@@ -65,6 +63,13 @@ services:
       # your LAN, just this machine. Defense in depth alongside the bearer
       # token, not a replacement for it.
       - "127.0.0.1:4100:4100"
+    # The api service owns schema migrations now (db.ts's connectDatabase
+    # vs initDatabase); mcp-server.ts just connects. So mcp needs to start
+    # after api, not before -- the reverse of what it was when both
+    # services ran migrations independently (that's what raced and crashed
+    # one of them on a cold start).
+    depends_on:
+      - api
     networks:
       - pwm-net
 

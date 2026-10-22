@@ -102,3 +102,24 @@ export async function initDatabase(): Promise<void> {
   });
   await runMigrations();
 }
+
+/**
+ * For callers that connect to the database but aren't the single source of
+ * truth for its schema (mcp-server.ts) -- assumes the database already
+ * exists and is already migrated, and does neither itself. The api service
+ * (index.ts, via initDatabase above) owns schema evolution; the MCP server
+ * is a gateway that enforces access scopes over that same data, not a
+ * second place that decides to create a database or alter its shape.
+ *
+ * This also avoids a real bug: before this split, both services called
+ * initDatabase() independently on every boot, and CREATE TABLE IF NOT
+ * EXISTS is not fully race-safe under true concurrency -- two processes
+ * starting at nearly the same moment could both pass the "doesn't exist
+ * yet" check and collide on the same catalog index, crashing one of them.
+ * With only one caller of runMigrations(), that race can't happen.
+ */
+export function connectDatabase(): void {
+  pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
+}
